@@ -34,8 +34,6 @@ Each skill has a single job. Each skill's output is the next skill's input.
 
 ## Requirements
 
-- Claude Pro, Max, Team, or Enterprise plan
-- Code execution enabled (Settings → Features → Code execution and file creation)
 - For Claude Code: any plan with Claude Code access
 
 ---
@@ -47,7 +45,7 @@ Each skill has a single job. Each skill's output is the next skill's input.
 **Personal install** — skills available across all your projects:
 
 ```bash
-git clone https://github.com/your-org/ddd-skills
+git clone https://github.com/mean-machine-gc/simple-fp-ddd-skills
 cp -r ddd-skills/skills/* ~/.claude/skills/
 ```
 
@@ -55,10 +53,10 @@ cp -r ddd-skills/skills/* ~/.claude/skills/
 
 ```bash
 cd your-project
-git clone https://github.com/your-org/ddd-skills
+git clone https://github.com/mean-machine-gc/simple-fp-ddd-skills
 cp -r ddd-skills/skills/* .claude/skills/
 # or add as a git submodule
-git submodule add https://github.com/your-org/ddd-skills .claude/ddd-skills
+git submodule add https://github.com/mean-machine-gc/simple-fp-ddd-skills .claude/ddd-skills
 cp -r .claude/ddd-skills/skills/* .claude/skills/
 ```
 
@@ -66,48 +64,9 @@ Claude Code discovers skills automatically. No configuration needed.
 
 ---
 
-### Claude.ai
-
-Each skill must be uploaded individually as a zip file.
-
-1. Go to **Settings → Features → Custom Skills**
-2. For each skill folder under `skills/`:
-   - Zip the folder (e.g. `ddd-data-modelling.zip` containing `SKILL.md`)
-   - Click **Upload skill** and select the zip
-3. Repeat for all seven skills
-4. Ensure **Code execution and file creation** is enabled in Settings → Features
-
-> Note: Claude.ai skills are per-user. Each colleague uploads separately.
 
 ---
 
-### Quick install script (Claude Code)
-
-```bash
-#!/bin/bash
-# install-ddd-skills.sh
-# Run from the cloned ddd-skills directory
-
-SKILLS_DIR="${1:-$HOME/.claude/skills}"
-mkdir -p "$SKILLS_DIR"
-
-for skill in skills/*/; do
-  name=$(basename "$skill")
-  mkdir -p "$SKILLS_DIR/$name"
-  cp "$skill/SKILL.md" "$SKILLS_DIR/$name/SKILL.md"
-  echo "installed: $name"
-done
-
-echo "Done. $SKILLS_DIR now contains all ddd-skills."
-```
-
-```bash
-chmod +x install-ddd-skills.sh
-./install-ddd-skills.sh                        # installs to ~/.claude/skills/
-./install-ddd-skills.sh .claude/skills/        # installs to current project
-```
-
----
 
 ## Usage
 
