@@ -1,4 +1,4 @@
-# ddd-skills
+# simple-fp-ddd-skills
 
 A set of Claude Agent Skills for building intentional, tested TypeScript
 using domain-driven design patterns. Adapted from *Domain Modelling Made
@@ -45,19 +45,19 @@ Each skill has a single job. Each skill's output is the next skill's input.
 **Personal install** — skills available across all your projects:
 
 ```bash
-git clone https://github.com/mean-machine-gc/simple-fp-ddd-skills
-cp -r ddd-skills/skills/* ~/.claude/skills/
+git clone https://github.com/mean-machine-gc/simple-fp-simple-fp-ddd-skills
+cp -r simple-fp-ddd-skills/skills/* ~/.claude/skills/
 ```
 
 **Project install** — skills scoped to one repo:
 
 ```bash
 cd your-project
-git clone https://github.com/mean-machine-gc/simple-fp-ddd-skills
-cp -r ddd-skills/skills/* .claude/skills/
+git clone https://github.com/mean-machine-gc/simple-fp-simple-fp-ddd-skills
+cp -r simple-fp-ddd-skills/skills/* .claude/skills/
 # or add as a git submodule
-git submodule add https://github.com/mean-machine-gc/simple-fp-ddd-skills .claude/ddd-skills
-cp -r .claude/ddd-skills/skills/* .claude/skills/
+git submodule add https://github.com/mean-machine-gc/simple-fp-simple-fp-ddd-skills .claude/simple-fp-ddd-skills
+cp -r .claude/simple-fp-ddd-skills/skills/* .claude/skills/
 ```
 
 Claude Code discovers skills automatically. No configuration needed.
