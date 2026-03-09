@@ -45,7 +45,7 @@ Each skill has a single job. Each skill's output is the next skill's input.
 **Personal install** — skills available across all your projects:
 
 ```bash
-git clone https://github.com/mean-machine-gc/simple-fp-simple-fp-ddd-skills
+git clone https://github.com/mean-machine-gc/simple-fp-ddd-skills
 cp -r simple-fp-ddd-skills/skills/* ~/.claude/skills/
 ```
 
@@ -53,10 +53,10 @@ cp -r simple-fp-ddd-skills/skills/* ~/.claude/skills/
 
 ```bash
 cd your-project
-git clone https://github.com/mean-machine-gc/simple-fp-simple-fp-ddd-skills
+git clone https://github.com/mean-machine-gc/simple-fp-ddd-skills
 cp -r simple-fp-ddd-skills/skills/* .claude/skills/
 # or add as a git submodule
-git submodule add https://github.com/mean-machine-gc/simple-fp-simple-fp-ddd-skills .claude/simple-fp-ddd-skills
+git submodule add https://github.com/mean-machine-gc/simple-fp-ddd-skills .claude/simple-fp-ddd-skills
 cp -r .claude/simple-fp-ddd-skills/skills/* .claude/skills/
 ```
 
