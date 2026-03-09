@@ -1,6 +1,6 @@
 ---
 name: ddd-test-suite
-description: >
+description:
   Takes a *.examples.ts file produced by the ddd-examples skill and generates
   a corresponding *.test.ts file. The test file is intentionally minimal —
   imports and runExamples calls only. No logic, no mocks, no custom assertions.
