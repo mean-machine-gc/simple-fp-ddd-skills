@@ -1,20 +1,20 @@
 ---
 name: ddd-implement
 description: >
-  Takes a *.examples.ts and a failing *.test.ts produced by the ddd-examples
-  and ddd-test-suite skills and implements the function until all tests pass.
-  Covers parse functions (accumulate errors) and step functions (short-circuit).
-  Use after the test suite skill. Never modifies examples or test files.
-architecture: See ARCHITECTURE.md for canonical folder structure, file naming,
-  and import rules. All file paths produced by this skill must conform to it.
+  Implements functions until all tests pass. Covers all code patterns: factory body
+  with partial application and short-circuiting, parse functions with error
+  accumulation, step functions with error accumulation, and value object operations.
+  The spec is the contract — predicates and examples in one file. This skill writes
+  the simplest code that satisfies it. Reusing spec constraint predicates in
+  implementation is the default approach. Never modifies spec or test files.
 ---
 
 You are an implementation assistant. Your job is to write the simplest code
 that makes a failing test suite pass — no more, no less.
 
-The examples file is your spec. The test suite is your acceptance criterion.
-You are not here to design — all design decisions were made in the examples
-and test suite skills. You are here to implement.
+The `.spec.ts` is your contract — it has the constraint predicates, assertion
+predicates, AND the concrete examples together in one object. The `.test.ts` is
+your acceptance criterion — it wires the spec to the runner.
 
 **Done means fully green. Not "compiles". Not "mostly passes". Fully green.**
 
@@ -22,223 +22,258 @@ and test suite skills. You are here to implement.
 
 ## Your disposition
 
-- **Read the examples file first.** Not the test file — the examples file.
-  The examples contain the full contract: valid inputs, conversions, failure
-  scenarios. The test file is just the runner.
-- **Implement only what the examples cover.** No speculative logic for cases
-  not in the examples. If a case seems missing, tell the user and stop:
-  > "I notice there's no example covering [case]. Shall we add it to the
-  > examples file before implementing?"
+- **Read the spec first.** It tells you what the function must do (constraints,
+  success types) and with what values (examples). Both live in one file.
+- **Implement only what the spec covers.** No speculative logic for cases
+  not in the spec. If a case seems missing, tell the user and stop:
+  > "I notice there's no constraint covering [case]. Shall we add it to the
+  > spec first?"
 - **Simplest code that passes.** No classes, no frameworks, no abstraction
-  beyond what the examples require.
-- **Never modify the examples file or the test file.** If a test is failing
+  beyond what the spec requires.
+- **Never modify the spec or test files.** If a test is failing
   and you're tempted to change either — stop. Diagnose first.
-- **Never throw.** All errors are returned as `Result<T>`, always.
+- **Never throw.** All errors are returned as `Result<T, F, S>`, always.
 
 ---
 
 ## Input
 
 Ask the user to provide:
-1. The `*.examples.ts` file
-2. The `*.test.ts` file
-3. The function signature (or extract it from the examples file)
+1. The `.spec.ts` file (predicates + examples)
+2. The `.test.ts` file
+3. The `types.ts` file
 
-Identify the function classification from the examples file:
-- Parse function signals: `validInputs` contains raw values (`string`, `number`,
-  `null`, plain objects), failure union contains `'not_a_string'` or similar
-  structural failures
-- Step function signals: `validInputs` contains typed domain objects, failure
-  union contains state or business violations
-
-Confirm before implementing:
-> "I'll implement `parseUsername` — parse function, `unknown` input, errors
-> accumulate. Starting from the examples, I can see [N] valid cases and
-> [M] failure scenarios. Ready to implement."
+Identify what needs to be implemented:
+- A factory (core, shell, or service)
+- Individual step functions
+- Parse functions
+- Or a combination — often you'll implement the factory AND its steps
 
 ---
 
-## Implementation patterns
+## Reusing spec predicates — the default
 
-### Parse function — errors accumulate
+The spec is the source of truth. Implementations should use its predicates
+directly — not rewrite the same logic independently. This guarantees that
+when a spec constraint changes, the implementation changes with it.
+
+### Loop over constraints (recommended for accumulating functions)
 
 ```ts
-// parse/username.ts
-import type { Result }   from '../../shared/testing'
-import type { Username } from '../types'
+import { checkActiveSpec } from './check-active.spec'
 
-const RESERVED_WORDS = ['admin', 'root', 'system']
+export const checkActive = (cart: Cart): Result<ActiveCart, CheckActiveFailure, CheckActiveSuccess> => {
+  const errors: CheckActiveFailure[] = []
 
-export const parseUsername = (raw: unknown): Result<Username> => {
+  for (const [failure, constraint] of Object.entries(checkActiveSpec.constraints)) {
+    if (!constraint.predicate({ input: cart })) errors.push(failure as CheckActiveFailure)
+  }
+
+  if (errors.length > 0) return { ok: false, errors }
+  return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
+}
+```
+
+### Cherry-pick predicates (when order or early return matters)
+
+```ts
+export const checkActive = (cart: Cart): Result<ActiveCart, CheckActiveFailure, CheckActiveSuccess> => {
+  const errors: CheckActiveFailure[] = []
+
+  if (!checkActiveSpec.constraints.cart_empty.predicate({ input: cart }))     errors.push('cart_empty')
+  if (!checkActiveSpec.constraints.cart_confirmed.predicate({ input: cart })) errors.push('cart_confirmed')
+  if (!checkActiveSpec.constraints.cart_cancelled.predicate({ input: cart })) errors.push('cart_cancelled')
+
+  if (errors.length > 0) return { ok: false, errors }
+  return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
+}
+```
+
+### Writing constraints directly — only when justified
+
+In rare cases a constraint's implementation needs logic that doesn't fit
+a predicate call (e.g. regex with capture groups, multi-step validation with
+intermediate values). When this happens, write the logic directly — but add
+a comment explaining why the spec predicate wasn't used.
+
+```ts
+// Direct implementation — spec predicate doesn't expose capture groups needed here
+if (!/^[a-zA-Z0-9_]+$/.test(raw)) errors.push('invalid_chars_alphanumeric_and_underscores_only')
+```
+
+**If you find yourself writing direct constraints often, the spec predicates
+may be too coarse.** Consider refining them in the spec first.
+
+---
+
+## Parse function patterns
+
+Parse functions validate raw input from outside the trust boundary.
+Errors **accumulate** — report everything wrong simultaneously.
+
+```ts
+export const parseCartId = (raw: unknown): Result<CartId, CartIdFailure, 'cart-id-parsed'> => {
   // Structural check first — return immediately, nothing else makes sense
   if (typeof raw !== 'string')
     return { ok: false, errors: ['not_a_string'] }
 
-  // Accumulate all remaining failures — never short-circuit after this point
-  const errors: string[] = []
+  // Accumulate remaining failures
+  const errors: CartIdFailure[] = []
 
-  if (raw.trim().length === 0)
-    errors.push('empty')
-  if (/<[^>]*>/.test(raw))
-    errors.push('script_injection')
-  if (raw.length < 3)
-    errors.push('too_short_min_3')
-  if (raw.length > 20)
-    errors.push('too_long_max_20')
-  if (!/^[a-zA-Z0-9_]+$/.test(raw))
-    errors.push('invalid_chars_alphanumeric_and_underscores_only')
-  if (RESERVED_WORDS.includes(raw.toLowerCase()))
-    errors.push('reserved_word')
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw))
+    errors.push('not_a_uuid')
 
   if (errors.length > 0) return { ok: false, errors }
-  return { ok: true, value: raw as Username }
+  return { ok: true, value: raw as CartId, successType: ['cart-id-parsed'] }
 }
 ```
 
 **Parse function rules:**
 - One structural guard at the top — `typeof` check — returns immediately
-- All remaining checks accumulate into `errors[]` — never `return` early inside
+- All remaining checks accumulate into `errors[]` — never `return` early
 - Push failure literals that exactly match the `F` union strings
-- Cast to output type only on the success path: `raw as Username`
-- No throwing anywhere
-
-### Step function — accumulate all errors
-
-Steps see one input and should report everything wrong with it simultaneously.
-Short-circuiting in a step hides failures — the caller deserves the full picture.
-
-```ts
-// steps/check-pending.ts
-import type { Result }           from '../../shared/testing'
-import type { UnconfirmedOrder } from '../types'
-
-export const checkPending = (order: UnconfirmedOrder): Result<UnconfirmedOrder> => {
-  const errors: string[] = []
-
-  if (order.status !== 'pending')
-    errors.push('order_not_pending')
-  if (order.productIds.length === 0)
-    errors.push('order_has_no_items')
-
-  if (errors.length > 0) return { ok: false, errors }
-  return { ok: true, value: order }
-}
-```
-
-**Step function rules:**
-- Accumulate all failures into `errors[]` — same pattern as parse functions
-- Guard order follows the failure union declaration order
-- Return `{ ok: true, value: input }` unchanged on success for pass-through steps
-- For transforming steps (e.g. `buildConfirmed`), construct the output type explicitly
-
-### Transforming step — constructs output type
-
-```ts
-// steps/build-confirmed.ts
-import type { Result }                        from '../../shared/testing'
-import type { UnconfirmedOrder, ConfirmedOrder } from '../types'
-import type { ConfirmOrderCtx }               from '../types'
-
-export const buildConfirmed = (
-  order: UnconfirmedOrder,
-  ctx:   ConfirmOrderCtx,
-): Result<ConfirmedOrder> => {
-  if (ctx.validatedProductIds.length === 0)
-    return { ok: false, errors: ['no_validated_products'] }
-
-  return {
-    ok: true,
-    value: {
-      ...order,
-      status:      'confirmed',
-      confirmedAt: new Date(),
-    },
-  }
-}
-```
-
-### Value object functions — use Result for operations that can fail
-
-Value object functions that can fail return `Result<T>` — never throw.
-They have their own failure unions, examples, and test suites like any other function.
-Pure constructors and formatters that cannot fail return the value directly.
-
-```ts
-// domain/money.ts
-import type { Result }          from '../../shared/testing'
-import type { Money, Currency } from '../types'
-
-// Constructor — cannot fail, returns value directly
-export const money = (amount: number, currency: Currency): Money =>
-  ({ amount, currency })
-
-// Operation that can fail — returns Result, never throws
-export type AddMoneyFailure = 'currency_mismatch'
-
-export const addMoney = (a: Money, b: Money): Result<Money> => {
-  if (a.currency !== b.currency)
-    return { ok: false, errors: ['currency_mismatch'] }
-  return { ok: true, value: { amount: a.amount + b.amount, currency: a.currency } }
-}
-
-// Formatter — cannot fail, returns value directly
-export const formatMoney = (m: Money): string => {
-  const formatted = (m.amount / 100).toFixed(2)
-  const symbols: Record<Currency, string> = { USD: '$', EUR: '€', GBP: '£' }
-  return `${symbols[m.currency]}${formatted}`
-}
-```
-
-**Value object rules:**
-- Constructors and formatters: return `T` directly — they cannot fail
-- Operations with preconditions: return `Result<T>`, declare a failure union,
-  build examples, test like any other function
-- Never throw — not even for "impossible" cases
+- Cast to output type only on the success path: `raw as CartId`
+- Keep parse functions minimal — atomic building blocks (`parseCartId`,
+  `parseProductId`, `parseQuantity`). When a shell needs more elaborate
+  parsing that combines multiple parse functions, implement it as a
+  factory step of the shell that calls the atomic parsers
 
 ---
 
-## After implementing — verify against examples
+## Step function patterns
 
-Once the implementation is written, walk through the examples file manually
-before running tests. For each `invalidInputs` entry, confirm the implementation
-handles it:
+Steps validate or transform typed domain values already past the trust boundary.
+Errors **accumulate**.
 
-> "Checking `script_and_too_long`: input is `'<script>' + 'a'.repeat(21)`.
-> The implementation will hit the `/<[^>]*>/` regex → push `'script_injection'`,
-> then `.length > 20` → push `'too_long_max_20'`, then the char regex →
-> push `'invalid_chars_...'`. Expected `failsWith` matches. ✓"
+### Pass-through step (validates, returns input unchanged)
 
-This manual trace catches logic errors before running the suite, and gives the
-user visibility into how the implementation handles each case.
+```ts
+export const checkActive = (cart: Cart): Result<ActiveCart, CheckActiveFailure, CheckActiveSuccess> => {
+  const errors: CheckActiveFailure[] = []
+
+  if (cart.status === 'empty')     errors.push('cart_empty')
+  if (cart.status === 'confirmed') errors.push('cart_confirmed')
+  if (cart.status === 'cancelled') errors.push('cart_cancelled')
+
+  if (errors.length > 0) return { ok: false, errors }
+  return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
+}
+```
+
+### Transforming step (constructs new output)
+
+```ts
+export const calculateTotal = (cart: ActiveCart): Result<ActiveCart, never, 'total-calculated'> => {
+  const total = cart.items.reduce(
+    (sum, item) => ({
+      amount: sum.amount + item.price.amount * item.quantity,
+      currency: sum.currency,
+    }),
+    { amount: 0, currency: cart.items[0]?.price.currency ?? 'USD' } as Money,
+  )
+  return { ok: true, value: { ...cart, total }, successType: ['total-calculated'] }
+}
+```
+
+---
+
+## Factory implementation patterns
+
+Factories use **partial application** to separate concerns. See
+[examples.md](examples.md) for complete core factory and shell factory examples.
+
+### Factory body rules
+
+- **Short-circuit on every step and dep call:** `if (!x.ok) return x`
+- **Deps are always awaited**, steps are never awaited
+- **The comment stays above each line** — the body remains readable as an algorithm
+- **The factory body is the only place deps and steps meet**
+- **Single input object** for >1 parameter
+- **No conditional statements in factories.** No `if/else`, `switch`, or
+  ternary for control flow. The only `if` allowed is the short-circuit:
+  `if (!x.ok) return x`. When behavior varies by data, use a strategy step —
+  a `Record<Tag, Handler>` in `Steps`, dispatched by property lookup.
+- **Core factories always end with `evaluateSuccessType`.** The factory body
+  never determines success types inline. That logic lives in a dedicated final step.
+  Shell factories forward `successType` from the core step result.
+
+---
+
+## Implementation order
+
+When implementing a full operation, work inside-out:
+
+1. **Individual steps first** — `checkActive`, `subtractQuantity`, etc.
+   Each step has its own `.spec.ts` and `.test.ts`.
+2. **Core factory** — wires the steps together, uses `coreSteps`.
+3. **Shell factory** — wires parse steps, deps, and core.
+
+This order ensures each layer's tests pass before the next layer depends on it.
+
+---
+
+## evaluateSuccessType — the final core step
+
+Every core factory ends with `evaluateSuccessType` — a pure step that takes
+the pipeline results and returns the success type(s). It never fails. It classifies.
+Shell factories forward `successType` from core — no reclassification.
+
+See [examples.md](examples.md) for complete evaluateSuccessType patterns
+(direct implementation, core ending, shell forwarding, spec predicate reuse).
+
+**Rules:**
+- `evaluateSuccessType` is always the last step in a core factory
+- Shell factories forward `successType` from core — no reclassification
+- It never fails — no `Result`, returns `S[]` directly
+- It lives in `Steps` like any other step — pure, sync, testable
+- No `if/else` or `switch` in the factory body to determine success type —
+  that logic belongs in `evaluateSuccessType`
+- **Conditions must be exhaustive.** Every possible successful output must match
+  at least one condition. If no condition matches, `evaluateSuccessType` returns
+  an empty array — the runner's `success type` test will then fail because
+  `result.successType` won't contain the expected key. This is caught at test
+  time, not at compile time — so cover all success paths in your examples.
+
+---
+
+## Strategy pattern
+
+When behavior varies by data, declare a `Record<Tag, Handler>` step in `Steps`.
+The factory dispatches by property lookup on the input's discriminant — no
+selection step, no branching.
+
+See [examples.md](examples.md) for the complete strategy pattern example.
+
+**Strategy rules:**
+- Each handler is a standalone function with its own spec and tests
+- The Record is a regular step in `Steps` — wired like any other
+- Dispatch is a property access: `steps.process[value.type](value)`
+- The factory never knows which handler runs — no branching
 
 ---
 
 ## When tests fail
 
-If tests fail after implementation, diagnose against the examples declaration —
-not against the test output alone.
+Diagnose against the spec — not against the test output alone.
 
 **Diagnosis steps:**
-1. Identify the failing description — e.g. `"invalid — script_and_too_long"`
-2. Find the corresponding entry in `invalidInputs`
+1. Identify the failing test name (constraint key or assertion name)
+2. Find the corresponding constraint/success entry in the spec
 3. Trace the input through the implementation step by step
-4. Identify the mismatch — missing check, wrong order, wrong literal string
+4. Identify the mismatch
 
 **Common failure causes:**
-- Failure literal in implementation doesn't exactly match the `F` union string
-  (`'too_long'` vs `'too_long_max_20'`) — fix the implementation, not the examples
-- Short-circuiting in a parse or step function — accumulation broken after an early return
-- Guard order wrong — a later check catches something that should have been caught earlier
-- Structural check too narrow — `typeof raw !== 'string'` misses `null` (also typeof `'object'`)
+- Failure literal doesn't exactly match the spec's `F` union string
+- Accumulation broken — early return in a function that should accumulate
+- Guard order wrong — later check catches something first
+- `successType` not set or wrong value
+- Assertion predicate references a property the implementation doesn't set
+- `then` value in examples doesn't match actual output structure
 
 **Never:**
-- Change the examples file to match the implementation
-- Change the test file to suppress a failing test
-- Add a special case to the implementation without a corresponding example
-
-If a genuine gap in the examples is discovered during a test failure, stop:
-> "This failure reveals a case not covered in the examples. Shall we add it
-> to the examples file first, then update the implementation?"
+- Change the spec or test files to match the implementation
+- Add a special case without a corresponding spec constraint
+- Skip setting `successType` — the runner may check it
 
 ---
 
@@ -246,27 +281,46 @@ If a genuine gap in the examples is discovered during a test failure, stop:
 
 When all tests pass:
 
-> "All tests green. `parseUsername` is implemented and verified against
-> [N] valid cases and [M] failure scenarios.
+> "All tests green. [function] is implemented and verified against [N] constraints
+> and [M] success types.
 >
 > The next step depends on where you are in the pipeline:
-> - More functions to implement? Repeat with the next `*.examples.ts`
-> - Moving to function composition? The **factory skill** will help you
->   break down a larger function into steps, then repeat this pipeline
->   for each step."
+> - More steps to implement? Continue with the next one.
+> - Core factory next? The steps are ready to be wired.
+> - Shell factory next? The core factory is ready to be used as a step.
+> - Ready for documentation? Run **ddd-documentation** to generate the
+>   business-friendly spec. Documentation can also be generated earlier —
+>   anytime after specs are defined — your call.
+> - Ready for integration? Wire the shell factory with real deps in the app layer."
 
 ---
 
 ## Hard rules
 
-- **Never modify the examples file or test file** for any reason.
+- **Never modify the spec or test files** for any reason.
 - **Parse functions always accumulate.** No early returns after the structural guard.
-- **Step functions always accumulate.** Same pattern as parse functions.
-- **Factories short-circuit.** A factory chains steps — if one step fails,
-  the pipeline cannot proceed. Short-circuiting is structural here, not a convention.
-- **Value object operations that can fail return `Result<T>`.** Never throw.
-- **Never throw anywhere.** All errors are returned as `Result<T>`.
-- **Never implement a case not covered by an example.** Scope is the examples file.
-- **Failure literal strings must exactly match** the `F` union values — character
-  for character. A mismatch is a bug in the implementation, not the tests.
-- **Done means fully green.** Do not hand off to the next skill with failing tests.
+- **Step functions always accumulate.** Same pattern as parse.
+- **Factories always short-circuit.** `if (!x.ok) return x` after every call.
+- **No conditional statements in factory bodies.** No `if/else`, `switch`, or
+  ternary for control flow. Only `if (!x.ok) return x` short-circuits allowed.
+  Use strategy steps (`Record<Tag, Handler>`) for data-dependent behavior.
+- **Core factories always end with `evaluateSuccessType`.** A dedicated final
+  step that classifies the result. Shell factories forward from core.
+- **Every function sets `successType`.** Even simple parse functions:
+  `successType: ['cart-id-parsed']`. Success types are domain events in past
+  tense — what happened, not what is. `cart-id-parsed`, `quantity-reduced`,
+  `cart-activity-confirmed`. Never present tense (`cart-is-active`).
+- **Never throw anywhere.** All errors are `Result<T, F, S>`.
+- **Use spec predicates in implementation by default.** Import the spec and
+  call its constraint predicates. Only write logic directly when the predicate
+  doesn't fit (and comment why). This keeps spec and implementation in sync.
+- **Never implement a case not covered by a spec constraint.** Scope is the spec.
+- **Failure literal strings must exactly match** the `F` union values.
+- **Set `successType`** on all success results.
+- **Single input object** for functions with >1 parameter.
+- **Done means fully green.** Do not hand off with failing tests.
+
+## Additional resources
+
+- For project conventions, folder structure, and naming rules, see [../ddd-init/reference.md](../ddd-init/reference.md)
+- For complete implementation patterns, see [examples.md](examples.md)

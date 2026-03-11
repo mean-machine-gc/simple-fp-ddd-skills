@@ -1,42 +1,25 @@
-# simple-fp-ddd-skills
+# DDD Skills Pipeline
 
-A set of Claude Agent Skills for building intentional, tested TypeScript
-using domain-driven design patterns. Adapted from *Domain Modelling Made
-Functional* and designed for AI-assisted development.
-
-These skills guide you through a full development pipeline — from data model
-to tested factory — one decision at a time, with validation at every step.
-
----
+A set of Claude Code skills for building domain-driven TypeScript applications.
+Each skill handles one phase of the design-to-implementation pipeline — from
+domain discovery to green tests.
 
 ## The pipeline
 
 ```
-ddd-data-modelling      Design domain types, primitives, failure unions
-      ↓
-ddd-examples            Build example declarations per function
-      ↓                 (validInputs, invalidInputs, conversions)
-ddd-test-suite          Generate *.test.ts files from examples
-      ↓
-ddd-implement           Implement functions until all tests are green
-      ↓
-ddd-factory             Decompose a function into steps + factory body
-      ↓
-ddd-factory-examples    Compose FactoryFailure, generate propagation scenarios
-      ↓
-ddd-factory-test-suite  Generate *.factory.test.ts files
+ddd-discover          What are we building? Aggregates, commands, policies.
+    ↓                 Output: domain.md
+ddd-data-modelling    Types for one aggregate. Lifecycle states, value objects, failure unions.
+    ↓                 Output: types.ts
+ddd-spec              Behavioral contract. Constraints, conditions, assertions, examples.
+    ↓                 Output: *.spec.ts
+ddd-test-suite        Wire spec to runners. Minimal test file.
+    ↓                 Output: *.test.ts
+ddd-implement         Simplest code that makes tests green.
+    ↓                 Output: *.ts
+ddd-documentation     Business-friendly spec from decision tables.
+                      Output: *.spec.md
 ```
-
-Each skill has a single job. Each skill's output is the next skill's input.
-`ARCHITECTURE.md` defines the canonical folder structure all skills conform to.
-
----
-
-## Requirements
-
-- For Claude Code: any plan with Claude Code access
-
----
 
 ## Install
 
@@ -62,129 +45,135 @@ cp -r .claude/simple-fp-ddd-skills/skills/* .claude/skills/
 
 Claude Code discovers skills automatically. No configuration needed.
 
----
+`ddd-init` runs once before any other skill to set up shared infrastructure.
 
+## Quick start
 
----
+1. **Set up infrastructure** — Run `ddd-init` to create shared types, test
+   runners, CLI scripts, and automation hooks.
 
+2. **Discover the domain** — Run `ddd-discover` to identify aggregates,
+   their responsibilities, and how they interact. Produces `domain.md`.
 
-## Usage
+3. **Pick an aggregate and model it** — Run `ddd-data-modelling` to design
+   types for one aggregate. Produces `types.ts`.
 
-Skills are invoked automatically by Claude when relevant, or explicitly:
+4. **Build functions inside-out** — For each function in the aggregate,
+   run the spec → test-suite → implement pipeline.
 
-```
-# In Claude Code or Claude.ai
-"help me model the order domain"              → triggers ddd-data-modelling
-"build examples for parseUsername"            → triggers ddd-examples
-"generate the test file for username"         → triggers ddd-test-suite
-"implement parseUsername"                     → triggers ddd-implement
-"help me build the confirmOrder factory"      → triggers ddd-factory
-"build factory examples for confirmOrder"     → triggers ddd-factory-examples
-"generate the factory test for confirmOrder"  → triggers ddd-factory-test-suite
-```
+## Skill overview
 
-You can also reference skills explicitly:
-```
-"use ddd-data-modelling to help me design the payment domain"
-```
+| Skill | Input | Output | Key idea |
+|---|---|---|---|
+| **ddd-discover** | Conversation | `domain.md` | Aggregates, commands, policies. No code. |
+| **ddd-init** | — | Shared infra files | `spec.ts`, `testing.ts`, CLI scripts, hooks. Run once. |
+| **ddd-data-modelling** | `domain.md` or conversation | `types.ts` | Discriminated unions, value objects, failure unions. |
+| **ddd-spec** | `types.ts` + function description | `*.spec.ts` | Predicates AND examples unified. Constraints, conditions, assertions, concrete data. |
+| **ddd-test-suite** | `*.spec.ts` | `*.test.ts` | Imports + one runner call. No logic. |
+| **ddd-implement** | `*.spec.ts` + `*.test.ts` | `*.ts` | Simplest code that passes. Parse accumulates, factory short-circuits. |
+| **ddd-documentation** | `*.spec.ts` + CLI output | `*.spec.md` | Business-friendly markdown with decision tables. |
 
----
+## Function taxonomy
 
-## What you get
+Every function is one of three types:
 
-After running the full pipeline for one aggregate, you have:
+- **Step** — Pure, sync, single-concern. Guards, transforms, parses. Atomic
+  building block. Tested with `runSpec`.
+- **Core factory** — Pure, sync, orchestrates steps. No I/O, no deps. Tested
+  with `runSpec` using real steps.
+- **Shell factory** — Async, bridges infra with domain. Parses input, calls
+  deps, calls core, persists. Tested with `runShellSpec` (adds dep propagation).
+
+Steps are built first, then composed into core, then wrapped in shell.
+
+## Spec types
+
+- **FunctionSpec** — For atomic functions. Has constraints (what can fail) and
+  successes with conditions and assertions (what's true about each outcome).
+- **FactorySpec** — For core factories. No constraint predicates (inherited from
+  step specs), has failure examples and success conditions with examples.
+- **ShellFactorySpec** — Extends FactorySpec with `baseDeps` and `depPropagation`.
+
+## Folder structure
 
 ```
 src/
-├── shared/
-│   └── testing.ts              ← runExamples, runFactoryExamples, all types
-├── {aggregate}/
-│   ├── types.ts                ← domain types + failure unions inline
-│   ├── parsing/
-│   │   ├── {primitive}.ts      ← parse function
-│   │   ├── {primitive}.examples.ts
-│   │   ├── {primitive}.examples.md   ← plain-English spec for PMs
-│   │   └── {primitive}.test.ts
-│   ├── shared/                 ← reusable steps
-│   └── service/
-│       └── {factory}/
-│           ├── {factory}.ts
-│           ├── {factory}.factory-examples.ts
-│           ├── {factory}.factory.test.ts
-│           └── steps/
-├── infra/                      ← dep implementations (not generated)
-└── app/index.ts                ← wiring (not generated)
+  shared/
+    spec.ts                   ← Result, FunctionSpec, FactorySpec, ShellFactorySpec
+    testing.ts                ← runSpec, runSpecAsync, runFactorySpec, runShellSpec
+
+  cart/                       ← one folder per aggregate
+    types.ts                  ← domain types, primitives, failure unions
+    shared/steps/             ← reusable steps across operations
+    subtract-quantity/        ← one folder per operation
+      *.spec.ts / *.test.ts / *.ts / *.spec.md
+      core/                   ← pure domain logic
+        *.spec.ts / *.test.ts / *.ts
+
+scripts/                      ← CLI tools for spec generation
+docs/                         ← documentation registry
 ```
 
-See `ARCHITECTURE.md` for the full structure and import rules.
+## Skill file structure
 
----
+Each skill directory may contain:
 
-## Key concepts
+| File | Purpose | Loaded |
+|---|---|---|
+| `SKILL.md` | Workflow, disposition, hard rules | Always |
+| `reference.md` | Detailed conventions and API docs | When needed |
+| `examples.md` | Complete code examples | When needed |
 
-**Failure unions as specs**
-```ts
-type UsernameFailure =
-  | 'not_a_string'
-  | 'empty'
-  | 'too_short_min_3'
-  | 'too_long_max_20'
-  | 'invalid_chars_alphanumeric_and_underscores_only'
-  | 'reserved_word'
-  | 'script_injection'
-// Reading this type tells you the complete rulebook. No docs needed.
-```
+`SKILL.md` is kept concise. Large code blocks live in companion files to
+keep the primary instructions focused on workflow and decision-making.
 
-**Examples as behavioural contracts**
-```ts
-const usernameInvalidInputs = {
-  too_short_and_invalid: {
-    input:     'a!',
-    failsWith: ['too_short_min_3', 'invalid_chars_alphanumeric_and_underscores_only'],
-  },
-} satisfies InvalidInputs<UsernameFailure>
-// Plain objects. Reviewable by PMs. Type-safe. AI-generatable.
-```
+## Conventions
 
-**Factory as algorithm**
-```ts
-const confirmOrderFactory = (steps: Steps) => (deps: Deps) => async (
-  orderId: OrderId
-): Promise<Result<ConfirmedOrder>> => {
-  // 1. fetch the order by id from persistence
-  // 2. check the order is in pending state       ← pure step
-  // 3. validate product ids via external service
-  // 4. build the confirmed order                 ← pure step
-  // 5. save the confirmed order to persistence
-  // 6. log success
-}
-// The comments are the spec. The types enforce the contract.
-```
+- **Files:** kebab-case — `check-active.spec.ts`
+- **Exports:** camelCase — `checkActiveSpec`
+- **Failures:** snake_case — `cart_empty`, `not_a_string`
+- **Success types:** kebab-case, **past tense** — domain events describing what
+  happened. `cart-id-parsed`, `quantity-reduced`, `cart-emptied`
+- **Single input object** for functions with >1 parameter
+- **No classes, no frameworks.** Plain types and pure functions only.
+- **No brands.** Plain type aliases. Meaning comes from parsing at boundaries.
+- **Errors never throw.** All failures are `Result<T, F, S>`.
 
----
+## Automation and `.spec.md` lifecycle
 
-## Feedback
+Each `.spec.md` file has **two owners**:
 
-These skills are under active development. If something doesn't work as
-expected or a skill produces output that doesn't match the architecture:
+| Sections | Owner | Updated by |
+|---|---|---|
+| §1-§3 (Overview, Interface, Scenarios) | AI (`ddd-documentation`) | Running the skill manually |
+| §4-§5 (Pipeline, Decision Tables) | CLI (`gen:specs`) | Automatically on `.spec.ts` save |
 
-- Open an issue on GitHub
-- Or note which skill, which step, and what it produced vs what you expected
+**The flow:**
+1. You edit a `.spec.ts` file (add a constraint, change a success type)
+2. The Claude Code hook runs `npm run gen:specs` automatically
+3. The CLI updates §4-§5 between `<!-- BEGIN:GENERATED -->` markers
+4. If the generated content actually changed, the CLI injects
+   `<!-- ⚠ STALE -->` markers above §1-§3, signaling the prose may need review
+5. Running `ddd-documentation` updates the prose and removes the stale markers
 
-The skills work best when you slow down at validation gates — especially
-failure unions and mixed examples. That's where your domain knowledge matters
-most and where the AI is most likely to need correction.
+The spec manifest (`scripts/spec-manifest.ts`) is updated by `ddd-spec`
+when creating factory specs.
 
----
+## Design principles
 
-## Skill summary
+**Decision tables are the primary spec artifact.** The `.spec.ts` file with
+typed predicates is the source of truth. Markdown documentation is derived.
 
-| Skill | Input | Output | Key validation gate |
-|-------|-------|--------|-------------------|
-| `ddd-data-modelling` | domain description | `types.ts` | failure union per primitive |
-| `ddd-examples` | type + failure union | `*.examples.ts` + `*.examples.md` | mixed dirty inputs |
-| `ddd-test-suite` | `*.examples.ts` | `*.test.ts` + `shared/testing.ts` | red suite confirmed |
-| `ddd-implement` | failing test suite | green `*.ts` | all tests pass |
-| `ddd-factory` | function signature | factory scaffold + step queue | algorithm as comments |
-| `ddd-factory-examples` | factory + step failures | `*.factory-examples.ts` | FactoryFailure composition |
-| `ddd-factory-test-suite` | `*.factory-examples.ts` | `*.factory.test.ts` | red suite confirmed |
+**Compiler enforces exhaustiveness.** `Record<F, ...>` in specs means you can't
+forget a failure case. Add a constraint to the spec → compiler error until the
+example exists.
+
+**Each skill does one thing.** No skill both designs and implements. The handoff
+points are explicit: spec → tests → implementation.
+
+**Inside-out implementation.** Atomic steps first, then core factory, then shell.
+Each layer's tests pass before the next layer depends on it.
+
+**Conversation over automation.** Skills guide through decisions one at a time.
+They propose, explain briefly, and wait for confirmation. The human makes the
+domain decisions — the skill handles the mechanical consistency.
