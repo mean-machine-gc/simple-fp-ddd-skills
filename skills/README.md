@@ -1,4 +1,4 @@
-# DDD Skills v0.3
+# DDD Skills v0.6
 
 A pipeline of agents' skills for building domain-driven TypeScript applications
 with typed behavioral contracts.
@@ -59,6 +59,7 @@ One test file pattern (4 lines) for everything.
 SpecFn<I, O, F, S>     — function contract bundle (signature, asyncSignature, input, output, failures, successTypes)
 Spec<Fn>               — behavioral contract (shouldFailWith, shouldSucceedWith, shouldAssert, steps?)
 StepInfo               — algorithm step (name, type, description, spec?)
+StrategyFn<N,I,O,C,F,S> — strategy dispatch contract (name, input, output, cases, failures, successTypes, handlers)
 Result<T, F, S>        — ok with value + successType, or errors
 ```
 
@@ -72,6 +73,7 @@ Result<T, F, S>        — ok with value + successType, or errors
 | Constraint predicates in spec | Spec is pure data + assertions |
 | Manual `inherit()` calls | Auto-inheritance via `steps` + `inheritFromSteps()` |
 | Separate factory skill for algorithm | `steps` array in spec |
+| Manual strategy `coveredBy` | Auto-inherited via `StrategyStep.handlers` |
 | 4 type params on spec | `SpecFn<I,O,F,S>` + `Spec<Fn>` (1 param) |
 | `when` / `then` | `whenInput` / `then` + `description` |
 | No formal factory return type | `Fn['signature']` / `Fn['asyncSignature']` |

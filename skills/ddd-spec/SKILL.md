@@ -328,7 +328,7 @@ const steps: StepInfo[] = [
 **Step types:**
 - `'step'` — pure, sync domain logic. May have a `spec` for failure inheritance.
 - `'dep'` — async, I/O (persistence, external service). No spec.
-- `'strategy'` — `Record<Tag, Handler>` dispatch. May have a `spec`.
+- `'strategy'` — data-dependent dispatch via `Record<Tag, Handler>`. Carries `handlers` field with handler specs for auto-inheritance. See "Strategy pattern" section below.
 
 **Rules:**
 - Steps are in pipeline order — the sequence matters for the decision table
@@ -594,9 +594,9 @@ next save) to generate the `.spec.md`.
 
 ## Strategy pattern
 
-When behavior varies based on data, declare a `Record<Tag, Handler>` step.
-The factory dispatches by property lookup on the input's discriminant.
-No selection step, no `if/else`, no `switch`, no branching.
+When behavior varies based on data, declare a strategy step. The factory
+dispatches by property lookup on the input's discriminant. No selection step,
+no `if/else`, no `switch`, no branching.
 
 **When to use:** Any time a factory would need a conditional to choose between
 two or more behaviors based on a discriminant field in the data. Instead of
@@ -604,53 +604,81 @@ branching, each variant becomes a standalone handler with its own spec and tests
 
 ### Building strategy specs
 
-**Step 1 — Spec each handler separately.** Each handler is an atomic function
-with its own `SpecFn`, `Spec`, test, and implementation file. Build them
-through the normal pipeline (ddd-spec → ddd-test-suite → ddd-implement) before
-specifying the factory.
+**Step 1 — Define the `StrategyFn` phantom type.** When the factory has
+data-dependent behavior, define a `StrategyFn` that enforces all handlers
+share the same input/output:
 
-**Step 2 — List the strategy step in the factory's `steps` array:**
+```ts
+export type DiscountStrategyFn = StrategyFn<
+    'calculateDiscount',
+    DiscountInput,
+    DiscountResult,
+    CouponType,
+    'rate_out_of_range' | 'discount_exceeds_total' | 'product_not_in_cart' | 'insufficient_items_for_promotion',
+    'percentage-applied' | 'fixed-applied' | 'promotion-applied'
+>
+```
+
+The phantom type bundles the strategy contract. `N` is the step name, `I/O`
+are the shared input/output types, `C` is the discriminant union (case tags),
+`F` aggregates all handler failures, `S` aggregates all handler success types.
+
+**Step 2 — Spec each handler as an atomic function.** Each handler gets its
+own `SpecFn`, `Spec`, test, and implementation — built through the normal
+pipeline (ddd-spec -> ddd-test-suite -> ddd-implement). Example handler spec
+signature:
+
+```ts
+export type ApplyPercentageFn = SpecFn<
+    DiscountInput,
+    DiscountResult,
+    'rate_out_of_range',
+    'percentage-applied'
+>
+export const applyPercentageSpec: Spec<ApplyPercentageFn> = { ... }
+```
+
+**Step 3 — List the strategy step in the factory's `steps` array.** The
+strategy step uses `type: 'strategy'` and carries a `handlers` field with
+all handler specs:
 
 ```ts
 const steps: StepInfo[] = [
-    { name: 'validatePayment', type: 'step', description: '...', spec: validatePaymentSpec },
-    { name: 'processPayment',  type: 'strategy', description: 'Process by payment type (instant/deferred)' },
-    { name: 'saveResult',      type: 'dep', description: '...' },
-    { name: 'evaluateSuccessType', type: 'step', description: 'Classify the success outcome' },
+    {
+        name: 'calculateDiscount',
+        type: 'strategy',
+        description: 'Calculate discount by coupon type (percentage / fixed / buy-x-get-y)',
+        handlers: {
+            percentage:     applyPercentageSpec,
+            fixed:          applyFixedSpec,
+            'buy-x-get-y':  applyBuyXGetYSpec,
+        },
+    },
 ]
 ```
 
-**Step 3 — Declare handler failures in the factory's `shouldFailWith`.**
-Handler failures are NOT auto-inherited (the strategy step has no single spec).
-Instead, declare each handler's failures with `coveredBy` pointing to the
-handler name:
+**Step 4 — Handler failures auto-inherit.** The factory's `shouldFailWith`
+can be `{}` (empty) — all handler failures are auto-inherited via
+`inheritFromSteps()`, which walks the `handlers` field. They appear as
+`test.skip` with attribution like `"covered by calculateDiscount (percentage)"`.
 
 ```ts
 shouldFailWith: {
-    // From processInstant handler
-    'card_expired':       { description: '...', examples: [], coveredBy: 'processPayment (instant)' },
-    'insufficient_funds': { description: '...', examples: [], coveredBy: 'processPayment (instant)' },
-    // From processDeferred handler
-    'invalid_billing_cycle': { description: '...', examples: [], coveredBy: 'processPayment (deferred)' },
+    // All handler failures are inherited automatically from the strategy step's handlers.
+    // They appear as test.skip with attribution:
+    //   "rate_out_of_range — ... (covered by calculateDiscount (percentage))"
+    //   "discount_exceeds_total — ... (covered by calculateDiscount (fixed))"
+    //   etc.
 },
 ```
 
-This produces `test.skip` with clear attribution in the runner output.
-
-**Step 4 — The factory's success types cover all handler outcomes.** If
-`processInstant` succeeds with `'instant-processed'` and `processDeferred` with
-`'deferred-scheduled'`, the factory's `SpecFn` declares both. Each gets its own
-entry in `shouldSucceedWith` with end-to-end examples.
-
-The strategy step's handlers are wired in `Steps` during implementation:
-
-```ts
-type Steps = {
-    validatePayment: ValidatePaymentFn['signature']
-    processPayment: Record<PaymentType, (payment: ValidatedPayment) => Result<...>>
-    evaluateSuccessType: ...
-}
-```
+**Key differences from regular steps:**
+- No `evaluateSuccessType` needed — each handler determines its own success
+  type, the factory forwards it
+- The factory's `SpecFn` derives `F` and `S` from `DiscountStrategyFn['failures']`
+  and `DiscountStrategyFn['successTypes']`
+- Decision tables show strategy as a single column in the main table; handler
+  constraints appear in separate sub-tables
 
 See [examples.md](examples.md) for the complete handler specs and factory spec.
 
@@ -688,7 +716,7 @@ Do not inline or generate shared files. That is ddd-init's responsibility.
   ternary. Only `if (!x.ok) return x` short-circuits. Use strategy steps
   (`Record<Tag, Handler>`) for data-dependent behavior.
 - **Every core factory ends with `evaluateSuccessType`.** Shell forwards from core.
-- **Strategy steps are `Record<Tag, Handler>`** — dispatched by property lookup.
+- **Strategy steps carry `handlers` field** with handler specs for auto-inheritance. Typed via `StrategyFn['handlers']` in the implementation's Steps type.
 - **Deps are individual functions.** Never grouped.
 - **Shell/core split requires core spec first.** Build inside-out.
 - **Never modify the spec file to match the implementation.** If something is

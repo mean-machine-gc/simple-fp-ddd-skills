@@ -95,6 +95,23 @@ type SpecFn<I, O, F extends string, S extends string> = {
 
 Accessed via indexed types: `Fn['signature']`, `Fn['input']`, `Fn['failures']`, etc.
 
+### StrategyFn — strategy dispatch contract
+
+```ts
+type StrategyFn<N extends string, I, O, C extends string, F extends string, S extends string> = {
+    name: N
+    input: I
+    output: O
+    cases: C
+    failures: F
+    successTypes: S
+    handlers: Record<C, (i: I) => Result<O, F, S>>
+}
+```
+
+Enforces all handlers share the same input and output types. Accessed via indexed types:
+`Fn['handlers']` (for Steps typing), `Fn['failures']`, `Fn['successTypes']`, `Fn['cases']`.
+
 ### Spec — behavioral contract
 
 ```ts
@@ -201,10 +218,22 @@ const steps: StepInfo[] = [
 ]
 ```
 
+### StepInfo — discriminated union
+
+```ts
+type StepStep = { name: string; type: 'step'; description: string; spec?: Spec<AnyFn> }
+type DepStep  = { name: string; type: 'dep';  description: string }
+type StrategyStep = { name: string; type: 'strategy'; description: string; handlers: Record<string, Spec<AnyFn>> }
+type StepInfo = StepStep | DepStep | StrategyStep
+```
+
+Step types carry only the fields that belong to them. Strategy steps carry `handlers` — a
+Record of handler specs keyed by case name — enabling auto-inheritance of handler failures.
+
 Step types:
 - `'step'` — pure, sync domain logic. May have a `spec` for failure inheritance.
 - `'dep'` — async, I/O. No spec (deps are infrastructure, tested separately).
-- `'strategy'` — `Record<Tag, Handler>` dispatch. May have a `spec`.
+- `'strategy'` — `Record<Tag, Handler>` dispatch. Carries `handlers` field with handler specs for auto-inheritance.
 
 ## Strategy Pattern
 
@@ -220,15 +249,15 @@ knows which handler runs.
 
 ```ts
 // ❌ NEVER — conditional in factory body
-if (payment.type === 'instant') {
-    result = processInstant(payment)
-} else {
-    result = processDeferred(payment)
+if (input.coupon.type === 'percentage') {
+    result = applyPercentage(input)
+} else if (input.coupon.type === 'fixed') {
+    result = applyFixed(input)
 }
 
 // ✅ ALWAYS — strategy dispatch
-const processed = steps.process[payment.value.type](payment.value)
-if (!processed.ok) return processed
+const result = steps.calculateDiscount[input.coupon.type](input)
+if (!result.ok) return result
 ```
 
 Each handler is:
@@ -237,6 +266,23 @@ Each handler is:
 - Wired into `Steps` as a `Record<Tag, Handler>` field
 
 The factory stays linear — the dispatch is a property access, not a branch.
+
+The strategy contract is typed via `StrategyFn`:
+
+```ts
+type DiscountStrategyFn = StrategyFn<
+    'calculateDiscount', DiscountInput, DiscountResult, CouponType,
+    'rate_out_of_range' | 'discount_exceeds_total' | ...,
+    'percentage-applied' | 'fixed-applied' | 'promotion-applied'
+>
+
+// Steps type uses the phantom's handlers field
+type Steps = { calculateDiscount: DiscountStrategyFn['handlers'] }
+```
+
+Handler failures are auto-inherited from the strategy step's `handlers` field via
+`inheritFromSteps()`. The factory's `shouldFailWith` can be empty — inherited failures
+appear as `test.skip` with `coveredBy: "calculateDiscount (percentage)"` attribution.
 
 ## Testing Approach
 

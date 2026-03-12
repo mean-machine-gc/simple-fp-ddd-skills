@@ -345,122 +345,120 @@ return { ok: true, value: saved.value, successType: coreResult.successType }
 
 ## Strategy pattern
 
-When behavior varies by data, declare a `Record<Tag, Handler>` step in `Steps`.
+When behavior varies by data, declare a `StrategyFn['handlers']` step in `Steps`.
 The factory dispatches by property lookup — no branching, no conditionals.
 
 ### Handler implementations — one per variant
 
-Each handler is a standalone function typed via its `SpecFn`, just like any
-other step. Each has its own spec, test, and implementation file.
+Each handler is a standalone function typed via its `SpecFn['signature']`, with
+its own spec, test, and implementation file.
+
+Primary example — `applyPercentage`:
 
 ```ts
-// process-instant.ts
-import type { ProcessInstantFn } from './process-instant.spec'
-import type { Result } from '../../shared/spec-framework'
+// apply-percentage.ts
+import type { ApplyPercentageFn } from './apply-percentage.spec'
+import type { PercentageCoupon } from '../types'
+import { calculateTotal } from '../types'
 
-export const processInstant: ProcessInstantFn['signature'] = (payment) => {
-    const errors: ProcessInstantFn['failures'][] = []
+export const applyPercentage: ApplyPercentageFn['signature'] = (input) => {
+    const coupon = input.coupon as PercentageCoupon
 
-    if (new Date(payment.expiry) < new Date()) errors.push('card_expired')
-    if (payment.amount > payment.availableBalance) errors.push('insufficient_funds')
+    if (coupon.rate < 1 || coupon.rate > 100)
+        return { ok: false, errors: ['rate_out_of_range'] }
 
-    if (errors.length > 0) return { ok: false, errors }
+    const originalTotal = calculateTotal(input.cart.items)
+    const savedAmount = Math.floor(originalTotal * coupon.rate / 100)
 
     return {
         ok: true,
-        value: {
-            id: generateId(),
-            amount: payment.amount,
-            method: 'instant' as const,
-            processedAt: new Date(),
-        },
-        successType: ['instant-processed'],
+        value: { originalTotal, savedAmount, finalTotal: originalTotal - savedAmount },
+        successType: ['percentage-applied'],
     }
 }
 ```
 
-```ts
-// process-deferred.ts
-import type { ProcessDeferredFn } from './process-deferred.spec'
+Key patterns visible here:
 
-export const processDeferred: ProcessDeferredFn['signature'] = (payment) => {
-    if (!['monthly', 'quarterly'].includes(payment.billingCycle))
-        return { ok: false, errors: ['invalid_billing_cycle'] }
+- **Typed via `ApplyPercentageFn['signature']`** — the spec defines the contract.
+- **Casts the discriminant variant**: `input.coupon as PercentageCoupon`. This is an
+  honest trade-off — TypeScript cannot narrow a union through `Record` dispatch, so
+  handlers cast explicitly. The factory's `satisfies Record<CouponType, unknown>`
+  ensures dispatch correctness at compile time.
+- **Error accumulation**: constraint violations return `{ ok: false, errors: [...] }`.
+- **Returns its own success type**: `successType: ['percentage-applied']`.
 
-    return {
-        ok: true,
-        value: {
-            id: generateId(),
-            amount: payment.amount,
-            method: 'deferred' as const,
-            scheduledFor: nextBillingDate(payment.billingCycle),
-        },
-        successType: ['deferred-scheduled'],
-    }
-}
-```
+The other two handlers follow the same shape:
 
-### Steps type — strategy is `Record<Tag, Handler>`
+- `applyFixed` — casts `input.coupon as FixedCoupon`, fails with `'discount_exceeds_total'`,
+  returns `successType: ['fixed-applied']`.
+- `applyBuyXGetY` — casts `input.coupon as BuyXGetYCoupon`, fails with
+  `'product_not_in_cart'` or `'insufficient_items_for_promotion'`,
+  returns `successType: ['promotion-applied']`.
+
+### Steps type — strategy typed via `StrategyFn['handlers']`
 
 ```ts
-type PaymentType = 'instant' | 'deferred'
-
 type Steps = {
-    validatePayment: ValidatePaymentFn['signature']
-    process: Record<PaymentType, (payment: ValidatedPayment) => Result<ProcessedPayment, ProcessFailure, ProcessSuccess>>
-    evaluateSuccessType: (args: { input: Input; output: Output }) => PaymentSuccess[]
+    calculateDiscount: DiscountStrategyFn['handlers']
 }
 ```
 
-### Factory body — linear, strategy dispatch is a property access
+`DiscountStrategyFn` is declared in the spec as
+`StrategyFn<'calculateDiscount', DiscountInput, DiscountResult, CouponType, F, S>`.
+Its `['handlers']` member resolves to
+`Record<CouponType, (i: DiscountInput) => Result<DiscountResult, F, S>>`.
+TypeScript enforces that every handler accepts the same input shape and returns the
+same result shape — plugging a handler with a different signature is a compile error.
+
+### Factory body — one dispatch line
 
 ```ts
-const processPaymentFactory =
-  (steps: Steps) =>
-  (deps: Deps): ProcessPaymentFn['asyncSignature'] =>
-  async (input) => {
-    // 1. validate payment input
-    const payment = steps.validatePayment(input)
-    if (!payment.ok) return payment
+const applyDiscountFactory =
+    (steps: Steps): ApplyDiscountFn['signature'] =>
+    (input) => {
+        // 1. calculate discount (dispatched by coupon type — no branching)
+        const result = steps.calculateDiscount[input.coupon.type](input)
+        if (!result.ok) return result
 
-    // 2. process the payment (dispatched by payment type — no branching)
-    const processed = steps.process[payment.value.type](payment.value)
-    if (!processed.ok) return processed
-
-    // 3. persist the result
-    const saved = await deps.savePayment(processed.value)
-    if (!saved.ok) return saved
-
-    // 4. evaluate success type
-    const successType = steps.evaluateSuccessType({ input, output: saved.value })
-    return { ok: true, value: saved.value, successType }
-  }
+        return result
+    }
 ```
 
-### Steps wiring — handlers plugged into the Record
+The factory never knows which handler runs. Dispatch is a single property access:
+`steps.calculateDiscount[input.coupon.type](input)`.
+
+### Steps wiring — `satisfies Record` pattern
 
 ```ts
-import { processInstant }  from './process-instant'
-import { processDeferred } from './process-deferred'
+import { applyPercentage } from './apply-percentage'
+import { applyFixed } from './apply-fixed'
+import { applyBuyXGetY } from './apply-buy-x-get-y'
 
 const steps: Steps = {
-    validatePayment,
-    process: {
-        instant:  processInstant,
-        deferred: processDeferred,
-    },
-    evaluateSuccessType,
+    calculateDiscount: {
+        'percentage':   applyPercentage,
+        'fixed':        applyFixed,
+        'buy-x-get-y':  applyBuyXGetY,
+    } satisfies Record<CouponType, unknown> as DiscountStrategyFn['handlers'],
 }
 
-export const processPayment = processPaymentFactory(steps)(realDeps)
+export const applyDiscount = applyDiscountFactory(steps)
 ```
+
+The `satisfies Record<CouponType, unknown>` clause is the key compile-time guard:
+if you add a new variant to `CouponType` (e.g. `'bogo'`), this line fails until
+you provide a handler for it. The `as DiscountStrategyFn['handlers']` then narrows
+the type so the factory sees the full handler signature.
 
 **Strategy rules:**
 - Each handler is a standalone function — own spec, own tests, own file
-- The `Record` field is typed with the discriminant union as key
-- Dispatch is `steps.record[value.discriminant](value)` — one line, no branching
-- Handler failures are declared in the factory's `shouldFailWith` with `coveredBy`
-- The factory never knows which handler runs
+- Handler casts the discriminant variant: `input.coupon as PercentageCoupon`
+- Steps type uses `StrategyFn['handlers']` for compile-time safety
+- Wiring uses `satisfies Record<Tag, unknown> as StrategyFn['handlers']`
+- Dispatch is property lookup: `steps.record[value.discriminant](value)`
+- No `evaluateSuccessType` for strategies — each handler determines its own success type
+- Handler failures auto-inherited — no manual `coveredBy` in factory spec
 
 ---
 

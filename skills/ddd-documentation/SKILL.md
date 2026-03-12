@@ -267,6 +267,54 @@ Add a note: "Column headers are abbreviated — see Pipeline for full step names
 
 ---
 
+## Strategy documentation
+
+When an operation uses strategy steps, the documentation needs additional sections.
+
+### Pipeline table
+
+Strategy steps appear as `STRATEGY` type with handler failures listed per case:
+
+| # | Name | Type | Description | Failure Codes |
+|---|---|---|---|---|
+| 1 | `calculateDiscount` | `STRATEGY` | Calculate discount by coupon type | `rate_out_of_range` _(percentage)_, `discount_exceeds_total` _(fixed)_, `product_not_in_cart` _(buy-x-get-y)_, `insufficient_items_for_promotion` _(buy-x-get-y)_ |
+
+### Decision table — main table
+
+The main decision table shows the linear pipeline. Strategy steps appear as a single
+column. Success rows indicate which handler was used:
+
+| Scenario | `calculateDiscount` _(strategy)_ | Outcome |
+|---|:---:|---|
+| OK percentage-applied | pass _(percentage)_ | percentage-applied |
+| OK fixed-applied | pass _(fixed)_ | fixed-applied |
+| FAIL rate_out_of_range | -- | -- |
+
+Strategy handler constraints are NOT shown in the main table — they are conditional
+on which handler runs.
+
+### Decision table — handler sub-tables
+
+Each handler gets its own decision table showing its specific constraints:
+
+#### Handler: `percentage`
+
+| Scenario | `calculateDiscount` :rate_out_of_range | Outcome |
+|---|:---:|---|
+| OK percentage-applied | pass | percentage-applied |
+| FAIL rate_out_of_range | FAIL | Fails: `rate_out_of_range` |
+
+Add a note linking the main table to the handler tables:
+> "Strategy constraints are conditional — see handler tables below for per-variant failure scenarios."
+
+### Deriving strategy sections
+
+- **Overview table:** Each handler success type gets its own row with the handler name noted
+- **Failure Cases:** Strategy handler failures list the handler name as Source: `calculateDiscount (percentage)`
+- **Assertions:** Group by success type — each handler's success type may have its own assertions
+
+---
+
 ## Creating aggregate pages
 
 When documenting an operation for an aggregate that doesn't have a `/docs` page yet,

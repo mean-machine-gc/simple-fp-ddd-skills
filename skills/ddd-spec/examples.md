@@ -434,59 +434,97 @@ export const subtractQuantityCoreSpec: Spec<SubtractQuantityCoreFn> = {
 
 ## Strategy pattern — complete example
 
-Strategy steps dispatch by data. Each handler is a standalone function with its
-own `SpecFn`, `Spec`, and tests. The factory spec lists the strategy step in
-the `steps` array and declares handler failures in `shouldFailWith`.
+Strategy steps dispatch by a discriminant on the input data. The `StrategyFn`
+phantom type enforces that all handlers share the same input and output types —
+if a handler has a different shape, it won't compile. Each handler is a
+standalone atomic function with its own `SpecFn` and `Spec`. The factory spec
+carries a `StrategyStep` with a `handlers` field that maps discriminant values
+to handler specs. Handler failures are auto-inherited via `inheritFromSteps` —
+no manual `coveredBy` needed.
+
+### StrategyFn — the phantom type contract
+
+```ts
+// StrategyFn enforces all handlers share the same input/output types.
+// The factory dispatch line `handlers[tag](input)` is only sound when this holds.
+export type DiscountStrategyFn = StrategyFn<
+    'calculateDiscount', DiscountInput, DiscountResult, CouponType,
+    'rate_out_of_range' | 'discount_exceeds_total' | 'product_not_in_cart' | 'insufficient_items_for_promotion',
+    'percentage-applied' | 'fixed-applied' | 'promotion-applied'
+>
+```
 
 ### Handler specs — one per variant
 
-Each handler is an atomic function. It gets a `SpecFn`, a `Spec`, and a test
-file like any other step.
+Each handler is an atomic function spec. It gets its own `SpecFn`, `Spec`,
+examples, and assertions. All three handlers below take `DiscountInput` and
+return `DiscountResult` — enforced by the `StrategyFn` above.
 
 ```ts
-// process-instant.spec.ts
-import type { SpecFn, Spec } from '../../shared/spec-framework'
-import type { ValidatedPayment, ProcessedPayment } from '../types'
+// apply-percentage.spec.ts
+import type { SpecFn, Spec } from '../spec-framework'
+import type { DiscountInput, DiscountResult, ActiveCart } from '../types'
 
-type ProcessInstantFn = SpecFn<
-    ValidatedPayment,
-    ProcessedPayment,
-    'card_expired' | 'insufficient_funds',
-    'instant-processed'
+export type ApplyPercentageFn = SpecFn<
+    DiscountInput,
+    DiscountResult,
+    'rate_out_of_range',
+    'percentage-applied'
 >
 
-export const processInstantSpec: Spec<ProcessInstantFn> = {
+const cart: ActiveCart = {
+    status: 'active', id: 'cart-1', customerId: 'c-1',
+    items: [
+        { productId: 'shoes-1', qty: 2, unitPrice: 5000 },  // 2 × $50 = $100
+        { productId: 'socks-1', qty: 3, unitPrice: 1000 },  // 3 × $10 = $30
+    ],
+    // Total: 13000
+}
+
+export const applyPercentageSpec: Spec<ApplyPercentageFn> = {
     shouldFailWith: {
-        'card_expired': {
-            description: 'Card expiry date is in the past',
-            examples: [{
-                description: 'expired card',
-                whenInput: { type: 'instant' as const, cardNumber: '4111-1111-1111-1111', expiry: '2020-01' },
-            }],
-        },
-        'insufficient_funds': {
-            description: 'Account balance below payment amount',
-            examples: [{
-                description: 'low balance',
-                whenInput: { type: 'instant' as const, cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 99999 },
-            }],
+        'rate_out_of_range': {
+            description: 'Percentage rate must be between 1 and 100 inclusive',
+            examples: [
+                { description: 'zero rate is rejected',      whenInput: { cart, coupon: { type: 'percentage', rate: 0 } } },
+                { description: 'negative rate is rejected',  whenInput: { cart, coupon: { type: 'percentage', rate: -10 } } },
+                { description: 'rate above 100 is rejected', whenInput: { cart, coupon: { type: 'percentage', rate: 101 } } },
+            ],
         },
     },
     shouldSucceedWith: {
-        'instant-processed': {
-            description: 'Payment processed immediately',
-            examples: [{
-                description: 'valid instant payment',
-                whenInput: { type: 'instant' as const, cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 100 },
-                then: { id: 'pay-1', amount: 100, method: 'instant', processedAt: expect.any(Date) as Date },
-            }],
+        'percentage-applied': {
+            description: 'Discount calculated as percentage of cart total',
+            examples: [
+                {
+                    description: '20% off a $130 cart saves $26',
+                    whenInput: { cart, coupon: { type: 'percentage', rate: 20 } },
+                    then: { originalTotal: 13000, savedAmount: 2600, finalTotal: 10400 },
+                },
+                {
+                    description: '100% off makes cart free (boundary)',
+                    whenInput: { cart, coupon: { type: 'percentage', rate: 100 } },
+                    then: { originalTotal: 13000, savedAmount: 13000, finalTotal: 0 },
+                },
+                {
+                    description: '1% off minimum discount (boundary)',
+                    whenInput: { cart, coupon: { type: 'percentage', rate: 1 } },
+                    then: { originalTotal: 13000, savedAmount: 130, finalTotal: 12870 },
+                },
+            ],
         },
     },
     shouldAssert: {
-        'instant-processed': {
-            'amount-matches': {
-                description: 'Processed amount matches input',
-                assert: (input, output) => output.amount === input.amount,
+        'percentage-applied': {
+            'saved-matches-rate': {
+                description: 'Saved amount equals original total times rate / 100',
+                assert: (input, output) =>
+                    output.savedAmount === Math.floor(output.originalTotal * (input.coupon as { rate: number }).rate / 100),
+            },
+            'total-is-consistent': {
+                description: 'Final total equals original minus saved',
+                assert: (_input, output) =>
+                    output.finalTotal === output.originalTotal - output.savedAmount,
             },
         },
     },
@@ -494,107 +532,329 @@ export const processInstantSpec: Spec<ProcessInstantFn> = {
 ```
 
 ```ts
-// process-deferred.spec.ts — same pattern, different failures and success type
-type ProcessDeferredFn = SpecFn<
-    ValidatedPayment,
-    ProcessedPayment,
-    'invalid_billing_cycle',
-    'deferred-scheduled'
+// apply-fixed.spec.ts
+import type { SpecFn, Spec } from '../spec-framework'
+import type { DiscountInput, DiscountResult, ActiveCart } from '../types'
+
+export type ApplyFixedFn = SpecFn<
+    DiscountInput,
+    DiscountResult,
+    'discount_exceeds_total',
+    'fixed-applied'
 >
 
-export const processDeferredSpec: Spec<ProcessDeferredFn> = {
+const cart: ActiveCart = {
+    status: 'active', id: 'cart-1', customerId: 'c-1',
+    items: [
+        { productId: 'shoes-1', qty: 2, unitPrice: 5000 },
+        { productId: 'socks-1', qty: 3, unitPrice: 1000 },
+    ],
+    // Total: 13000
+}
+
+export const applyFixedSpec: Spec<ApplyFixedFn> = {
     shouldFailWith: {
-        'invalid_billing_cycle': {
-            description: 'Billing cycle must be monthly or quarterly',
-            examples: [{ description: 'weekly cycle', whenInput: { type: 'deferred' as const, billingCycle: 'weekly' } }],
+        'discount_exceeds_total': {
+            description: 'Fixed discount amount must not exceed the cart total',
+            examples: [
+                { description: '$150 off a $130 cart is rejected', whenInput: { cart, coupon: { type: 'fixed', amount: 15000 } } },
+                { description: 'one cent over total is rejected',  whenInput: { cart, coupon: { type: 'fixed', amount: 13001 } } },
+            ],
         },
     },
     shouldSucceedWith: {
-        'deferred-scheduled': {
-            description: 'Payment scheduled for next billing cycle',
-            examples: [{
-                description: 'valid deferred payment',
-                whenInput: { type: 'deferred' as const, billingCycle: 'monthly', amount: 100 },
-                then: { id: 'pay-1', amount: 100, method: 'deferred', scheduledFor: expect.any(Date) as Date },
-            }],
+        'fixed-applied': {
+            description: 'Fixed amount subtracted from cart total',
+            examples: [
+                {
+                    description: '$25 off a $130 cart',
+                    whenInput: { cart, coupon: { type: 'fixed', amount: 2500 } },
+                    then: { originalTotal: 13000, savedAmount: 2500, finalTotal: 10500 },
+                },
+                {
+                    description: 'exact total makes cart free (boundary)',
+                    whenInput: { cart, coupon: { type: 'fixed', amount: 13000 } },
+                    then: { originalTotal: 13000, savedAmount: 13000, finalTotal: 0 },
+                },
+            ],
         },
     },
     shouldAssert: {
-        'deferred-scheduled': {},
+        'fixed-applied': {
+            'saved-matches-amount': {
+                description: 'Saved amount equals the coupon amount',
+                assert: (input, output) =>
+                    output.savedAmount === (input.coupon as { amount: number }).amount,
+            },
+            'total-is-consistent': {
+                description: 'Final total equals original minus saved',
+                assert: (_input, output) =>
+                    output.finalTotal === output.originalTotal - output.savedAmount,
+            },
+        },
+    },
+}
+```
+
+```ts
+// apply-buy-x-get-y.spec.ts
+import type { SpecFn, Spec } from '../spec-framework'
+import type { DiscountInput, DiscountResult, ActiveCart } from '../types'
+
+export type ApplyBuyXGetYFn = SpecFn<
+    DiscountInput,
+    DiscountResult,
+    'product_not_in_cart' | 'insufficient_items_for_promotion',
+    'promotion-applied'
+>
+
+const cart: ActiveCart = {
+    status: 'active', id: 'cart-1', customerId: 'c-1',
+    items: [
+        { productId: 'shoes-1', qty: 2, unitPrice: 5000 },  // 2 × $50
+        { productId: 'socks-1', qty: 3, unitPrice: 1000 },  // 3 × $10
+    ],
+    // Total: 13000
+}
+
+export const applyBuyXGetYSpec: Spec<ApplyBuyXGetYFn> = {
+    shouldFailWith: {
+        'product_not_in_cart': {
+            description: 'The promoted product must exist in the cart',
+            examples: [
+                {
+                    description: 'promotion on hat-1 but cart has no hats',
+                    whenInput: {
+                        cart,
+                        coupon: { type: 'buy-x-get-y', productId: 'hat-1', buyQty: 1, freeQty: 1 },
+                    },
+                },
+            ],
+        },
+        'insufficient_items_for_promotion': {
+            description: 'Cart must have at least buyQty of the promoted product',
+            examples: [
+                {
+                    description: 'buy 5 get 1 free but only 2 shoes in cart',
+                    whenInput: {
+                        cart,
+                        coupon: { type: 'buy-x-get-y', productId: 'shoes-1', buyQty: 5, freeQty: 1 },
+                    },
+                },
+            ],
+        },
+    },
+    shouldSucceedWith: {
+        'promotion-applied': {
+            description: 'Free items deducted from cart total',
+            examples: [
+                {
+                    description: 'buy 2 shoes get 1 free saves $50',
+                    whenInput: {
+                        cart,
+                        coupon: { type: 'buy-x-get-y', productId: 'shoes-1', buyQty: 2, freeQty: 1 },
+                    },
+                    then: { originalTotal: 13000, savedAmount: 5000, finalTotal: 8000 },
+                },
+                {
+                    description: 'buy 3 socks get 2 free saves $20',
+                    whenInput: {
+                        cart,
+                        coupon: { type: 'buy-x-get-y', productId: 'socks-1', buyQty: 3, freeQty: 2 },
+                    },
+                    then: { originalTotal: 13000, savedAmount: 2000, finalTotal: 11000 },
+                },
+            ],
+        },
+    },
+    shouldAssert: {
+        'promotion-applied': {
+            'saved-matches-free-items': {
+                description: 'Saved amount equals freeQty times unit price of promoted product',
+                assert: (input, output) => {
+                    const coupon = input.coupon as { productId: string; freeQty: number }
+                    const item = input.cart.items.find(i => i.productId === coupon.productId)!
+                    return output.savedAmount === Math.min(coupon.freeQty, item.qty) * item.unitPrice
+                },
+            },
+            'total-is-consistent': {
+                description: 'Final total equals original minus saved',
+                assert: (_input, output) =>
+                    output.finalTotal === output.originalTotal - output.savedAmount,
+            },
+        },
     },
 }
 ```
 
 ### Factory spec with strategy step
 
-The factory lists the strategy in `steps` and declares handler failures as own
-failures in `shouldFailWith`. Handler failures are NOT inherited — they come
-from the individual handler specs, not from a single strategy spec.
+The factory declares a `StrategyStep` in the `steps` array. The step carries a
+`handlers` field mapping each discriminant value to its handler spec. The
+`ApplyDiscountFn` type references `DiscountStrategyFn['failures']` and
+`DiscountStrategyFn['successTypes']` to stay in sync with the phantom type.
+
+`shouldFailWith` is completely empty — all handler failures are auto-inherited
+via `inheritFromSteps`. At test time, `testSpec()` walks the strategy step's
+handlers, discovers their failures, and emits `test.skip` entries with
+attribution like `"rate_out_of_range — ... (covered by calculateDiscount
+(percentage))"`.
 
 ```ts
-// process-payment.spec.ts — shell factory with strategy step
-import type { SpecFn, Spec, StepInfo } from '../../shared/spec-framework'
-import type { RawPaymentInput, ProcessedPayment } from '../types'
-import { validatePaymentSpec } from './validate-payment.spec'
+// apply-discount.spec.ts — factory with strategy step
+import type { SpecFn, StrategyFn, Spec, StepInfo } from '../spec-framework'
+import type { DiscountInput, DiscountResult, ActiveCart, CouponType } from '../types'
+import { applyPercentageSpec } from './apply-percentage.spec'
+import { applyFixedSpec } from './apply-fixed.spec'
+import { applyBuyXGetYSpec } from './apply-buy-x-get-y.spec'
 
-type ProcessPaymentFn = SpecFn<
-    RawPaymentInput,
-    ProcessedPayment,
-    | 'not_a_string' | 'invalid_payment_type'              // from validatePayment step
-    | 'card_expired' | 'insufficient_funds'                 // from processInstant handler
-    | 'invalid_billing_cycle'                               // from processDeferred handler
-    | 'save_payment_failed',                                // from savPayment dep
-    'instant-processed' | 'deferred-scheduled'
+// -- Strategy contract --------------------------------------------------------
+// Enforces: all handlers share the same input/output types.
+// Without this, plugging a handler with a different input shape would compile
+// but break at runtime when the factory dispatches.
+
+export type DiscountStrategyFn = StrategyFn<
+    'calculateDiscount',
+    DiscountInput,
+    DiscountResult,
+    CouponType,
+    // All handler failures aggregated
+    | 'rate_out_of_range'
+    | 'discount_exceeds_total'
+    | 'product_not_in_cart'
+    | 'insufficient_items_for_promotion',
+    // All handler success types aggregated
+    'percentage-applied' | 'fixed-applied' | 'promotion-applied'
 >
 
+// -- Function contract --------------------------------------------------------
+
+export type ApplyDiscountFn = SpecFn<
+    DiscountInput,
+    DiscountResult,
+    DiscountStrategyFn['failures'],
+    DiscountStrategyFn['successTypes']
+>
+
+// -- Algorithm ----------------------------------------------------------------
+
 const steps: StepInfo[] = [
-    { name: 'validatePayment',     type: 'step',     description: 'Validate and parse payment input',  spec: validatePaymentSpec },
-    { name: 'processPayment',      type: 'strategy', description: 'Process by payment type (instant/deferred)' },
-    { name: 'saveResult',          type: 'dep',      description: 'Persist the payment result' },
+    {
+        name: 'calculateDiscount',
+        type: 'strategy',
+        description: 'Calculate discount by coupon type (percentage / fixed / buy-x-get-y)',
+        handlers: {
+            percentage:     applyPercentageSpec,
+            fixed:          applyFixedSpec,
+            'buy-x-get-y':  applyBuyXGetYSpec,
+        },
+    },
 ]
 
-export const processPaymentSpec: Spec<ProcessPaymentFn> = {
+// -- Test data ----------------------------------------------------------------
+
+const cart: ActiveCart = {
+    status: 'active', id: 'cart-1', customerId: 'c-1',
+    items: [
+        { productId: 'shoes-1', qty: 2, unitPrice: 5000 },
+        { productId: 'socks-1', qty: 3, unitPrice: 1000 },
+    ],
+    // Total: 13000
+}
+
+// -- Spec — behavioral contract -----------------------------------------------
+// shouldFailWith is empty — all handler failures auto-inherited via inheritFromSteps.
+
+export const applyDiscountSpec: Spec<ApplyDiscountFn> = {
     steps,
+
     shouldFailWith: {
-        // Handler failures — declared as own failures, not inherited
-        'card_expired':          { description: 'Card expiry date is in the past',     examples: [], coveredBy: 'processPayment (instant)' },
-        'insufficient_funds':    { description: 'Account balance below payment amount', examples: [], coveredBy: 'processPayment (instant)' },
-        'invalid_billing_cycle': { description: 'Billing cycle must be monthly or quarterly', examples: [], coveredBy: 'processPayment (deferred)' },
-        // Dep failure
-        'save_payment_failed':   { description: 'Persistence failed', examples: [{
-            description: 'save fails',
-            whenInput: { type: 'instant', cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 100 },
-        }]},
+        // All handler failures are inherited automatically from the strategy step's handlers.
+        // They appear as test.skip with attribution:
+        //   "rate_out_of_range — ... (covered by calculateDiscount (percentage))"
+        //   "discount_exceeds_total — ... (covered by calculateDiscount (fixed))"
+        //   etc.
     },
+
     shouldSucceedWith: {
-        'instant-processed': {
-            description: 'Payment processed immediately via instant handler',
-            examples: [{
-                description: 'valid instant payment end to end',
-                whenInput: { type: 'instant', cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 100 },
-                then: { id: 'pay-1', amount: 100, method: 'instant', processedAt: expect.any(Date) as Date },
-            }],
+        'percentage-applied': {
+            description: 'Percentage discount calculated from cart total',
+            examples: [
+                {
+                    description: '20% off via percentage coupon',
+                    whenInput: { cart, coupon: { type: 'percentage', rate: 20 } },
+                    then: { originalTotal: 13000, savedAmount: 2600, finalTotal: 10400 },
+                },
+            ],
         },
-        'deferred-scheduled': {
-            description: 'Payment scheduled for next billing cycle via deferred handler',
-            examples: [{
-                description: 'valid deferred payment end to end',
-                whenInput: { type: 'deferred', billingCycle: 'monthly', amount: 100 },
-                then: { id: 'pay-1', amount: 100, method: 'deferred', scheduledFor: expect.any(Date) as Date },
-            }],
+        'fixed-applied': {
+            description: 'Fixed amount subtracted from cart total',
+            examples: [
+                {
+                    description: '$25 off via fixed coupon',
+                    whenInput: { cart, coupon: { type: 'fixed', amount: 2500 } },
+                    then: { originalTotal: 13000, savedAmount: 2500, finalTotal: 10500 },
+                },
+            ],
+        },
+        'promotion-applied': {
+            description: 'Free items deducted via buy-x-get-y promotion',
+            examples: [
+                {
+                    description: 'buy 2 shoes get 1 free via promotion coupon',
+                    whenInput: {
+                        cart,
+                        coupon: { type: 'buy-x-get-y', productId: 'shoes-1', buyQty: 2, freeQty: 1 },
+                    },
+                    then: { originalTotal: 13000, savedAmount: 5000, finalTotal: 8000 },
+                },
+            ],
         },
     },
+
     shouldAssert: {
-        'instant-processed': {},
-        'deferred-scheduled': {},
+        'percentage-applied': {
+            'total-is-consistent': {
+                description: 'Final total equals original minus saved',
+                assert: (_input, output) =>
+                    output.finalTotal === output.originalTotal - output.savedAmount,
+            },
+        },
+        'fixed-applied': {
+            'total-is-consistent': {
+                description: 'Final total equals original minus saved',
+                assert: (_input, output) =>
+                    output.finalTotal === output.originalTotal - output.savedAmount,
+            },
+        },
+        'promotion-applied': {
+            'total-is-consistent': {
+                description: 'Final total equals original minus saved',
+                assert: (_input, output) =>
+                    output.finalTotal === output.originalTotal - output.savedAmount,
+            },
+        },
     },
 }
 ```
 
-The strategy step has `type: 'strategy'` for documentation clarity. Handler
-failures use `coveredBy` with the handler name in parentheses to show which
-variant owns the failure. This produces `test.skip` entries in the runner
-output — the failures are proven at the handler spec level.
+Key differences from composed factory specs:
+
+- **`StrategyFn` phantom type** — enforces all handlers share `DiscountInput`
+  and `DiscountResult`. Without it, a handler with a different input shape would
+  compile but break at runtime when the factory dispatches by tag.
+- **`StrategyStep` with `handlers` field** — maps each discriminant value
+  (`percentage`, `fixed`, `buy-x-get-y`) to its handler spec. The test runner
+  walks this map to discover and attribute inherited failures.
+- **`shouldFailWith: {}`** — completely empty. All four handler failures
+  (`rate_out_of_range`, `discount_exceeds_total`, `product_not_in_cart`,
+  `insufficient_items_for_promotion`) are auto-inherited from the strategy
+  step's handler specs via `inheritFromSteps`. No manual `coveredBy` needed.
+- **`ApplyDiscountFn` references the phantom type** —
+  `DiscountStrategyFn['failures']` and `DiscountStrategyFn['successTypes']`
+  keep the factory's type parameters in sync with the strategy contract.
+- **One success example per handler outcome** — the factory proves each
+  dispatch path works end-to-end. Detailed edge cases live in the handler specs.
 
 ---
 
