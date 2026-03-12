@@ -346,22 +346,121 @@ return { ok: true, value: saved.value, successType: coreResult.successType }
 ## Strategy pattern
 
 When behavior varies by data, declare a `Record<Tag, Handler>` step in `Steps`.
-The factory dispatches by property lookup — no branching.
+The factory dispatches by property lookup — no branching, no conditionals.
+
+### Handler implementations — one per variant
+
+Each handler is a standalone function typed via its `SpecFn`, just like any
+other step. Each has its own spec, test, and implementation file.
 
 ```ts
-type Steps = {
-    validatePayment: (raw: unknown) => Result<ValidatedPayment>
-    process: Record<PaymentType, (payment: ValidatedPayment) => Result<ProcessedPayment>>
-    evaluateSuccessType: (args: { input: Input; output: Output }) => PaymentSuccess[]
-}
+// process-instant.ts
+import type { ProcessInstantFn } from './process-instant.spec'
+import type { Result } from '../../shared/spec-framework'
 
-// Factory body — linear, no branching
-// 2. process the payment (dispatched by payment type)
-const processed = steps.process[payment.value.type](payment.value)
-if (!processed.ok) return processed
+export const processInstant: ProcessInstantFn['signature'] = (payment) => {
+    const errors: ProcessInstantFn['failures'][] = []
+
+    if (new Date(payment.expiry) < new Date()) errors.push('card_expired')
+    if (payment.amount > payment.availableBalance) errors.push('insufficient_funds')
+
+    if (errors.length > 0) return { ok: false, errors }
+
+    return {
+        ok: true,
+        value: {
+            id: generateId(),
+            amount: payment.amount,
+            method: 'instant' as const,
+            processedAt: new Date(),
+        },
+        successType: ['instant-processed'],
+    }
+}
 ```
 
-Each handler is a standalone function with its own spec and tests.
+```ts
+// process-deferred.ts
+import type { ProcessDeferredFn } from './process-deferred.spec'
+
+export const processDeferred: ProcessDeferredFn['signature'] = (payment) => {
+    if (!['monthly', 'quarterly'].includes(payment.billingCycle))
+        return { ok: false, errors: ['invalid_billing_cycle'] }
+
+    return {
+        ok: true,
+        value: {
+            id: generateId(),
+            amount: payment.amount,
+            method: 'deferred' as const,
+            scheduledFor: nextBillingDate(payment.billingCycle),
+        },
+        successType: ['deferred-scheduled'],
+    }
+}
+```
+
+### Steps type — strategy is `Record<Tag, Handler>`
+
+```ts
+type PaymentType = 'instant' | 'deferred'
+
+type Steps = {
+    validatePayment: ValidatePaymentFn['signature']
+    process: Record<PaymentType, (payment: ValidatedPayment) => Result<ProcessedPayment, ProcessFailure, ProcessSuccess>>
+    evaluateSuccessType: (args: { input: Input; output: Output }) => PaymentSuccess[]
+}
+```
+
+### Factory body — linear, strategy dispatch is a property access
+
+```ts
+const processPaymentFactory =
+  (steps: Steps) =>
+  (deps: Deps): ProcessPaymentFn['asyncSignature'] =>
+  async (input) => {
+    // 1. validate payment input
+    const payment = steps.validatePayment(input)
+    if (!payment.ok) return payment
+
+    // 2. process the payment (dispatched by payment type — no branching)
+    const processed = steps.process[payment.value.type](payment.value)
+    if (!processed.ok) return processed
+
+    // 3. persist the result
+    const saved = await deps.savePayment(processed.value)
+    if (!saved.ok) return saved
+
+    // 4. evaluate success type
+    const successType = steps.evaluateSuccessType({ input, output: saved.value })
+    return { ok: true, value: saved.value, successType }
+  }
+```
+
+### Steps wiring — handlers plugged into the Record
+
+```ts
+import { processInstant }  from './process-instant'
+import { processDeferred } from './process-deferred'
+
+const steps: Steps = {
+    validatePayment,
+    process: {
+        instant:  processInstant,
+        deferred: processDeferred,
+    },
+    evaluateSuccessType,
+}
+
+export const processPayment = processPaymentFactory(steps)(realDeps)
+```
+
+**Strategy rules:**
+- Each handler is a standalone function — own spec, own tests, own file
+- The `Record` field is typed with the discriminant union as key
+- Dispatch is `steps.record[value.discriminant](value)` — one line, no branching
+- Handler failures are declared in the factory's `shouldFailWith` with `coveredBy`
+- The factory never knows which handler runs
 
 ---
 

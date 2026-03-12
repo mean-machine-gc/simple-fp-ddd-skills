@@ -206,6 +206,38 @@ Step types:
 - `'dep'` — async, I/O. No spec (deps are infrastructure, tested separately).
 - `'strategy'` — `Record<Tag, Handler>` dispatch. May have a `spec`.
 
+## Strategy Pattern
+
+When behavior varies by data, use a **strategy step** instead of branching.
+A strategy is a `Record<Tag, Handler>` field in `Steps` — the factory dispatches
+by property lookup on the input's discriminant. No `if/else`, no `switch`,
+no ternary.
+
+**Why it matters:** Factories must stay linear. Conditional statements create
+invisible control flow that the spec can't capture. A strategy step makes each
+variant a standalone function with its own spec and tests — the factory never
+knows which handler runs.
+
+```ts
+// ❌ NEVER — conditional in factory body
+if (payment.type === 'instant') {
+    result = processInstant(payment)
+} else {
+    result = processDeferred(payment)
+}
+
+// ✅ ALWAYS — strategy dispatch
+const processed = steps.process[payment.value.type](payment.value)
+if (!processed.ok) return processed
+```
+
+Each handler is:
+- A standalone function in its own file with its own `SpecFn`, `Spec`, and tests
+- Typed via `Fn['signature']` like any other step
+- Wired into `Steps` as a `Record<Tag, Handler>` field
+
+The factory stays linear — the dispatch is a property access, not a branch.
+
 ## Testing Approach
 
 - **All functions** — tested with `testSpec(name, spec, fn)`. One runner for everything.

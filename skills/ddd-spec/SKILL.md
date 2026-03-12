@@ -596,10 +596,20 @@ next save) to generate the `.spec.md`.
 
 When behavior varies based on data, declare a `Record<Tag, Handler>` step.
 The factory dispatches by property lookup on the input's discriminant.
-No selection step, no branching.
+No selection step, no `if/else`, no `switch`, no branching.
 
-In the spec, a strategy step looks like any other step. Each handler is a
-standalone function with its own spec and tests.
+**When to use:** Any time a factory would need a conditional to choose between
+two or more behaviors based on a discriminant field in the data. Instead of
+branching, each variant becomes a standalone handler with its own spec and tests.
+
+### Building strategy specs
+
+**Step 1 — Spec each handler separately.** Each handler is an atomic function
+with its own `SpecFn`, `Spec`, test, and implementation file. Build them
+through the normal pipeline (ddd-spec → ddd-test-suite → ddd-implement) before
+specifying the factory.
+
+**Step 2 — List the strategy step in the factory's `steps` array:**
 
 ```ts
 const steps: StepInfo[] = [
@@ -610,15 +620,39 @@ const steps: StepInfo[] = [
 ]
 ```
 
+**Step 3 — Declare handler failures in the factory's `shouldFailWith`.**
+Handler failures are NOT auto-inherited (the strategy step has no single spec).
+Instead, declare each handler's failures with `coveredBy` pointing to the
+handler name:
+
+```ts
+shouldFailWith: {
+    // From processInstant handler
+    'card_expired':       { description: '...', examples: [], coveredBy: 'processPayment (instant)' },
+    'insufficient_funds': { description: '...', examples: [], coveredBy: 'processPayment (instant)' },
+    // From processDeferred handler
+    'invalid_billing_cycle': { description: '...', examples: [], coveredBy: 'processPayment (deferred)' },
+},
+```
+
+This produces `test.skip` with clear attribution in the runner output.
+
+**Step 4 — The factory's success types cover all handler outcomes.** If
+`processInstant` succeeds with `'instant-processed'` and `processDeferred` with
+`'deferred-scheduled'`, the factory's `SpecFn` declares both. Each gets its own
+entry in `shouldSucceedWith` with end-to-end examples.
+
 The strategy step's handlers are wired in `Steps` during implementation:
 
 ```ts
 type Steps = {
-    validatePayment: ...
+    validatePayment: ValidatePaymentFn['signature']
     processPayment: Record<PaymentType, (payment: ValidatedPayment) => Result<...>>
     evaluateSuccessType: ...
 }
 ```
+
+See [examples.md](examples.md) for the complete handler specs and factory spec.
 
 ---
 

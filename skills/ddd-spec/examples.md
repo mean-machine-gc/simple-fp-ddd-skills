@@ -432,24 +432,169 @@ export const subtractQuantityCoreSpec: Spec<SubtractQuantityCoreFn> = {
 
 ---
 
-## Strategy pattern — spec example
+## Strategy pattern — complete example
 
-Strategy steps dispatch by data. Each handler has its own spec. The factory
-spec just lists the strategy step in the steps array.
+Strategy steps dispatch by data. Each handler is a standalone function with its
+own `SpecFn`, `Spec`, and tests. The factory spec lists the strategy step in
+the `steps` array and declares handler failures in `shouldFailWith`.
+
+### Handler specs — one per variant
+
+Each handler is an atomic function. It gets a `SpecFn`, a `Spec`, and a test
+file like any other step.
 
 ```ts
-const steps: StepInfo[] = [
-    { name: 'validatePayment',     type: 'step',     description: 'Validate payment input',     spec: validatePaymentSpec },
-    { name: 'processPayment',      type: 'strategy', description: 'Process by payment type' },
-    { name: 'saveResult',          type: 'dep',      description: 'Persist the result' },
-    { name: 'evaluateSuccessType', type: 'step',     description: 'Classify the success outcome' },
-]
+// process-instant.spec.ts
+import type { SpecFn, Spec } from '../../shared/spec-framework'
+import type { ValidatedPayment, ProcessedPayment } from '../types'
+
+type ProcessInstantFn = SpecFn<
+    ValidatedPayment,
+    ProcessedPayment,
+    'card_expired' | 'insufficient_funds',
+    'instant-processed'
+>
+
+export const processInstantSpec: Spec<ProcessInstantFn> = {
+    shouldFailWith: {
+        'card_expired': {
+            description: 'Card expiry date is in the past',
+            examples: [{
+                description: 'expired card',
+                whenInput: { type: 'instant' as const, cardNumber: '4111-1111-1111-1111', expiry: '2020-01' },
+            }],
+        },
+        'insufficient_funds': {
+            description: 'Account balance below payment amount',
+            examples: [{
+                description: 'low balance',
+                whenInput: { type: 'instant' as const, cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 99999 },
+            }],
+        },
+    },
+    shouldSucceedWith: {
+        'instant-processed': {
+            description: 'Payment processed immediately',
+            examples: [{
+                description: 'valid instant payment',
+                whenInput: { type: 'instant' as const, cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 100 },
+                then: { id: 'pay-1', amount: 100, method: 'instant', processedAt: expect.any(Date) as Date },
+            }],
+        },
+    },
+    shouldAssert: {
+        'instant-processed': {
+            'amount-matches': {
+                description: 'Processed amount matches input',
+                assert: (input, output) => output.amount === input.amount,
+            },
+        },
+    },
+}
 ```
 
-The strategy step has `type: 'strategy'` for documentation clarity. It may have
-a `spec` if you want to inherit failures from all handlers collectively. More
-commonly, handler failures are declared as own failures in the factory's
-`shouldFailWith`.
+```ts
+// process-deferred.spec.ts — same pattern, different failures and success type
+type ProcessDeferredFn = SpecFn<
+    ValidatedPayment,
+    ProcessedPayment,
+    'invalid_billing_cycle',
+    'deferred-scheduled'
+>
+
+export const processDeferredSpec: Spec<ProcessDeferredFn> = {
+    shouldFailWith: {
+        'invalid_billing_cycle': {
+            description: 'Billing cycle must be monthly or quarterly',
+            examples: [{ description: 'weekly cycle', whenInput: { type: 'deferred' as const, billingCycle: 'weekly' } }],
+        },
+    },
+    shouldSucceedWith: {
+        'deferred-scheduled': {
+            description: 'Payment scheduled for next billing cycle',
+            examples: [{
+                description: 'valid deferred payment',
+                whenInput: { type: 'deferred' as const, billingCycle: 'monthly', amount: 100 },
+                then: { id: 'pay-1', amount: 100, method: 'deferred', scheduledFor: expect.any(Date) as Date },
+            }],
+        },
+    },
+    shouldAssert: {
+        'deferred-scheduled': {},
+    },
+}
+```
+
+### Factory spec with strategy step
+
+The factory lists the strategy in `steps` and declares handler failures as own
+failures in `shouldFailWith`. Handler failures are NOT inherited — they come
+from the individual handler specs, not from a single strategy spec.
+
+```ts
+// process-payment.spec.ts — shell factory with strategy step
+import type { SpecFn, Spec, StepInfo } from '../../shared/spec-framework'
+import type { RawPaymentInput, ProcessedPayment } from '../types'
+import { validatePaymentSpec } from './validate-payment.spec'
+
+type ProcessPaymentFn = SpecFn<
+    RawPaymentInput,
+    ProcessedPayment,
+    | 'not_a_string' | 'invalid_payment_type'              // from validatePayment step
+    | 'card_expired' | 'insufficient_funds'                 // from processInstant handler
+    | 'invalid_billing_cycle'                               // from processDeferred handler
+    | 'save_payment_failed',                                // from savPayment dep
+    'instant-processed' | 'deferred-scheduled'
+>
+
+const steps: StepInfo[] = [
+    { name: 'validatePayment',     type: 'step',     description: 'Validate and parse payment input',  spec: validatePaymentSpec },
+    { name: 'processPayment',      type: 'strategy', description: 'Process by payment type (instant/deferred)' },
+    { name: 'saveResult',          type: 'dep',      description: 'Persist the payment result' },
+]
+
+export const processPaymentSpec: Spec<ProcessPaymentFn> = {
+    steps,
+    shouldFailWith: {
+        // Handler failures — declared as own failures, not inherited
+        'card_expired':          { description: 'Card expiry date is in the past',     examples: [], coveredBy: 'processPayment (instant)' },
+        'insufficient_funds':    { description: 'Account balance below payment amount', examples: [], coveredBy: 'processPayment (instant)' },
+        'invalid_billing_cycle': { description: 'Billing cycle must be monthly or quarterly', examples: [], coveredBy: 'processPayment (deferred)' },
+        // Dep failure
+        'save_payment_failed':   { description: 'Persistence failed', examples: [{
+            description: 'save fails',
+            whenInput: { type: 'instant', cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 100 },
+        }]},
+    },
+    shouldSucceedWith: {
+        'instant-processed': {
+            description: 'Payment processed immediately via instant handler',
+            examples: [{
+                description: 'valid instant payment end to end',
+                whenInput: { type: 'instant', cardNumber: '4111-1111-1111-1111', expiry: '2030-01', amount: 100 },
+                then: { id: 'pay-1', amount: 100, method: 'instant', processedAt: expect.any(Date) as Date },
+            }],
+        },
+        'deferred-scheduled': {
+            description: 'Payment scheduled for next billing cycle via deferred handler',
+            examples: [{
+                description: 'valid deferred payment end to end',
+                whenInput: { type: 'deferred', billingCycle: 'monthly', amount: 100 },
+                then: { id: 'pay-1', amount: 100, method: 'deferred', scheduledFor: expect.any(Date) as Date },
+            }],
+        },
+    },
+    shouldAssert: {
+        'instant-processed': {},
+        'deferred-scheduled': {},
+    },
+}
+```
+
+The strategy step has `type: 'strategy'` for documentation clarity. Handler
+failures use `coveredBy` with the handler name in parentheses to show which
+variant owns the failure. This produces `test.skip` entries in the runner
+output — the failures are proven at the handler spec level.
 
 ---
 
