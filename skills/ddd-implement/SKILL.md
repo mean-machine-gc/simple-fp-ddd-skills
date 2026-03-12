@@ -1,20 +1,19 @@
 ---
 name: ddd-implement
 description: >
-  Implements functions until all tests pass. Covers all code patterns: factory body
-  with partial application and short-circuiting, parse functions with error
-  accumulation, step functions with error accumulation, and value object operations.
-  The spec is the contract — predicates and examples in one file. This skill writes
-  the simplest code that satisfies it. Reusing spec constraint predicates in
-  implementation is the default approach. Never modifies spec or test files.
+  Implements functions until all tests pass. Covers all code patterns: atomic
+  functions (parse, step) with error accumulation, factory bodies with partial
+  application and short-circuiting, evaluateSuccessType, and strategy dispatch.
+  Implementation is typed via Fn['signature'] or Fn['asyncSignature'] from the
+  spec's SpecFn — single source of truth. Never modifies spec or test files.
 ---
 
 You are an implementation assistant. Your job is to write the simplest code
 that makes a failing test suite pass — no more, no less.
 
-The `.spec.ts` is your contract — it has the constraint predicates, assertion
-predicates, AND the concrete examples together in one object. The `.test.ts` is
-your acceptance criterion — it wires the spec to the runner.
+The `.spec.ts` is your contract — it has the `SpecFn` type (function signature),
+failure groups with examples, success groups with examples, and assertion predicates.
+The `.test.ts` wires the spec to `testSpec()`.
 
 **Done means fully green. Not "compiles". Not "mostly passes". Fully green.**
 
@@ -22,11 +21,12 @@ your acceptance criterion — it wires the spec to the runner.
 
 ## Your disposition
 
-- **Read the spec first.** It tells you what the function must do (constraints,
-  success types) and with what values (examples). Both live in one file.
+- **Read the spec first.** It tells you what the function must do (failure groups,
+  success groups, assertions) and with what values (examples). The `SpecFn` type
+  tells you the exact signature.
 - **Implement only what the spec covers.** No speculative logic for cases
   not in the spec. If a case seems missing, tell the user and stop:
-  > "I notice there's no constraint covering [case]. Shall we add it to the
+  > "I notice there's no failure group covering [case]. Shall we add it to the
   > spec first?"
 - **Simplest code that passes.** No classes, no frameworks, no abstraction
   beyond what the spec requires.
@@ -39,7 +39,7 @@ your acceptance criterion — it wires the spec to the runner.
 ## Input
 
 Ask the user to provide:
-1. The `.spec.ts` file (predicates + examples)
+1. The `.spec.ts` file (SpecFn type + Spec declaration)
 2. The `.test.ts` file
 3. The `types.ts` file
 
@@ -51,58 +51,65 @@ Identify what needs to be implemented:
 
 ---
 
-## Reusing spec predicates — the default
+## Implementation typing — the key v4 pattern
 
-The spec is the source of truth. Implementations should use its predicates
-directly — not rewrite the same logic independently. This guarantees that
-when a spec constraint changes, the implementation changes with it.
+Implementations are typed directly from the spec's `SpecFn` type. This is the
+single source of truth — no redundant type annotations needed.
 
-### Loop over constraints (recommended for accumulating functions)
+### Atomic functions — typed via `Fn['signature']`
 
 ```ts
-import { checkActiveSpec } from './check-active.spec'
+import type { CheckActiveFn } from './check-active.spec'
 
-export const checkActive = (cart: Cart): Result<ActiveCart, CheckActiveFailure, CheckActiveSuccess> => {
-  const errors: CheckActiveFailure[] = []
-
-  for (const [failure, constraint] of Object.entries(checkActiveSpec.constraints)) {
-    if (!constraint.predicate({ input: cart })) errors.push(failure as CheckActiveFailure)
-  }
-
-  if (errors.length > 0) return { ok: false, errors }
-  return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
+export const checkActive: CheckActiveFn['signature'] = (cart) => {
+    const errors: CheckActiveFn['failures'][] = []
+    // ... implementation
+    if (errors.length > 0) return { ok: false, errors }
+    return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
 }
 ```
 
-### Cherry-pick predicates (when order or early return matters)
+`Fn['signature']` carries the full type: input, output, failures, success types.
+TypeScript infers everything from the spec — no need to annotate the return type.
+
+`Fn['failures'][]` types the error accumulator, keeping failure literals in sync
+between spec and implementation.
+
+### Core factory — returns `Fn['signature']`
 
 ```ts
-export const checkActive = (cart: Cart): Result<ActiveCart, CheckActiveFailure, CheckActiveSuccess> => {
-  const errors: CheckActiveFailure[] = []
+import type { SubtractQuantityCoreFn } from './subtract-quantity.spec'
 
-  if (!checkActiveSpec.constraints.cart_empty.predicate({ input: cart }))     errors.push('cart_empty')
-  if (!checkActiveSpec.constraints.cart_confirmed.predicate({ input: cart })) errors.push('cart_confirmed')
-  if (!checkActiveSpec.constraints.cart_cancelled.predicate({ input: cart })) errors.push('cart_cancelled')
+const subtractQuantityCoreFactory =
+    (steps: CoreSteps): SubtractQuantityCoreFn['signature'] =>
+    (input) => {
+        // ... short-circuit pipeline
+    }
 
-  if (errors.length > 0) return { ok: false, errors }
-  return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
-}
+export const subtractQuantityCore = subtractQuantityCoreFactory(coreSteps)
 ```
 
-### Writing constraints directly — only when justified
+The factory return type IS the spec's function signature. Partial application:
+`factory(steps)` returns the function.
 
-In rare cases a constraint's implementation needs logic that doesn't fit
-a predicate call (e.g. regex with capture groups, multi-step validation with
-intermediate values). When this happens, write the logic directly — but add
-a comment explaining why the spec predicate wasn't used.
+### Shell factory — returns `Fn['asyncSignature']`
 
 ```ts
-// Direct implementation — spec predicate doesn't expose capture groups needed here
-if (!/^[a-zA-Z0-9_]+$/.test(raw)) errors.push('invalid_chars_alphanumeric_and_underscores_only')
+import type { SubtractQuantityShellFn } from './subtract-quantity.spec'
+
+const subtractQuantityShellFactory =
+    (steps: ShellSteps) =>
+    (deps: Deps): SubtractQuantityShellFn['asyncSignature'] =>
+    async (input) => {
+        // ... short-circuit pipeline with awaited deps
+    }
+
+export const makeSubtractQuantity = subtractQuantityShellFactory(shellSteps)
+// App layer: const subtractQuantity = makeSubtractQuantity(realDeps)
 ```
 
-**If you find yourself writing direct constraints often, the spec predicates
-may be too coarse.** Consider refining them in the spec first.
+Shell uses `Fn['asyncSignature']` because it's async. Partial application:
+`factory(steps)(deps)` returns the async function.
 
 ---
 
@@ -112,19 +119,23 @@ Parse functions validate raw input from outside the trust boundary.
 Errors **accumulate** — report everything wrong simultaneously.
 
 ```ts
-export const parseCartId = (raw: unknown): Result<CartId, CartIdFailure, 'cart-id-parsed'> => {
-  // Structural check first — return immediately, nothing else makes sense
-  if (typeof raw !== 'string')
-    return { ok: false, errors: ['not_a_string'] }
+import type { ParseCartIdFn } from './parse-cart-id.spec'
 
-  // Accumulate remaining failures
-  const errors: CartIdFailure[] = []
+export const parseCartId: ParseCartIdFn['signature'] = (raw) => {
+    // Structural check first — return immediately, nothing else makes sense
+    if (typeof raw !== 'string')
+        return { ok: false, errors: ['not_a_string'] }
 
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw))
-    errors.push('not_a_uuid')
+    // Accumulate remaining failures
+    const errors: ParseCartIdFn['failures'][] = []
 
-  if (errors.length > 0) return { ok: false, errors }
-  return { ok: true, value: raw as CartId, successType: ['cart-id-parsed'] }
+    if (raw.length === 0)
+        errors.push('empty')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw))
+        errors.push('not_a_uuid')
+
+    if (errors.length > 0) return { ok: false, errors }
+    return { ok: true, value: raw, successType: ['cart-id-parsed'] }
 }
 ```
 
@@ -132,11 +143,8 @@ export const parseCartId = (raw: unknown): Result<CartId, CartIdFailure, 'cart-i
 - One structural guard at the top — `typeof` check — returns immediately
 - All remaining checks accumulate into `errors[]` — never `return` early
 - Push failure literals that exactly match the `F` union strings
-- Cast to output type only on the success path: `raw as CartId`
-- Keep parse functions minimal — atomic building blocks (`parseCartId`,
-  `parseProductId`, `parseQuantity`). When a shell needs more elaborate
-  parsing that combines multiple parse functions, implement it as a
-  factory step of the shell that calls the atomic parsers
+- Cast to output type only on the success path if needed
+- Keep parse functions minimal and atomic
 
 ---
 
@@ -145,33 +153,32 @@ export const parseCartId = (raw: unknown): Result<CartId, CartIdFailure, 'cart-i
 Steps validate or transform typed domain values already past the trust boundary.
 Errors **accumulate**.
 
-### Pass-through step (validates, returns input unchanged)
+### Pass-through step (validates, returns input narrowed)
 
 ```ts
-export const checkActive = (cart: Cart): Result<ActiveCart, CheckActiveFailure, CheckActiveSuccess> => {
-  const errors: CheckActiveFailure[] = []
+import type { CheckActiveFn } from './check-active.spec'
+import type { ActiveCart } from '../types'
 
-  if (cart.status === 'empty')     errors.push('cart_empty')
-  if (cart.status === 'confirmed') errors.push('cart_confirmed')
-  if (cart.status === 'cancelled') errors.push('cart_cancelled')
+export const checkActive: CheckActiveFn['signature'] = (cart) => {
+    const errors: CheckActiveFn['failures'][] = []
 
-  if (errors.length > 0) return { ok: false, errors }
-  return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
+    if (cart.status === 'empty')     errors.push('cart_empty')
+    if (cart.status === 'confirmed') errors.push('cart_confirmed')
+    if (cart.status === 'cancelled') errors.push('cart_cancelled')
+
+    if (errors.length > 0) return { ok: false, errors }
+    return { ok: true, value: cart as ActiveCart, successType: ['cart-activity-confirmed'] }
 }
 ```
 
 ### Transforming step (constructs new output)
 
 ```ts
-export const calculateTotal = (cart: ActiveCart): Result<ActiveCart, never, 'total-calculated'> => {
-  const total = cart.items.reduce(
-    (sum, item) => ({
-      amount: sum.amount + item.price.amount * item.quantity,
-      currency: sum.currency,
-    }),
-    { amount: 0, currency: cart.items[0]?.price.currency ?? 'USD' } as Money,
-  )
-  return { ok: true, value: { ...cart, total }, successType: ['total-calculated'] }
+export const calculateTotal: CalculateTotalFn['signature'] = (cart) => {
+    const total = cart.items.reduce(
+        (sum, item) => sum + item.unitPrice * item.qty, 0,
+    )
+    return { ok: true, value: { ...cart, total }, successType: ['total-calculated'] }
 }
 ```
 
@@ -179,8 +186,104 @@ export const calculateTotal = (cart: ActiveCart): Result<ActiveCart, never, 'tot
 
 ## Factory implementation patterns
 
-Factories use **partial application** to separate concerns. See
-[examples.md](examples.md) for complete core factory and shell factory examples.
+Factories use **partial application** to separate concerns.
+
+### Core factory — complete example
+
+```ts
+export type CoreSteps = {
+    checkActive:         (cart: Cart) => Result<ActiveCart>
+    checkProductInCart:   (input: { cart: ActiveCart; productId: ProductId }) => Result<ActiveCart>
+    subtractQuantity:    (input: CoreInput) => Result<ActiveCart>
+    recalculateTotal:    (cart: ActiveCart) => Result<ActiveCart>
+    evaluateSuccessType: (args: { input: CoreInput; output: CoreOutput }) => CoreSuccess[]
+}
+
+const subtractQuantityCoreFactory =
+    (steps: CoreSteps): SubtractQuantityCoreFn['signature'] =>
+    (input) => {
+        // 1. ensure cart is in active state
+        const active = steps.checkActive(input.cart)
+        if (!active.ok) return active
+
+        // 2. find the target product in the cart
+        const found = steps.checkProductInCart({ cart: active.value, productId: input.productId })
+        if (!found.ok) return found
+
+        // 3. reduce item quantity
+        const subtracted = steps.subtractQuantity(input)
+        if (!subtracted.ok) return subtracted
+
+        // 4. recalculate total
+        const recalculated = steps.recalculateTotal(subtracted.value)
+        if (!recalculated.ok) return recalculated
+
+        // 5. evaluate success type
+        const successType = steps.evaluateSuccessType({ input, output: recalculated.value })
+        return { ok: true, value: recalculated.value, successType }
+    }
+
+export const coreSteps: CoreSteps = {
+    checkActive, checkProductInCart, subtractQuantity,
+    recalculateTotal, evaluateSuccessType,
+}
+export const subtractQuantityCore = subtractQuantityCoreFactory(coreSteps)
+```
+
+### Shell factory — complete example
+
+```ts
+export type ShellSteps = {
+    parseCartId:    (raw: unknown) => Result<string>
+    parseProductId: (raw: unknown) => Result<string>
+    parseQuantity:  (raw: unknown) => Result<number>
+    core:           SubtractQuantityCoreFn['signature']
+}
+
+export type Deps = {
+    findCartById: (id: string) => Promise<Result<Cart>>
+    saveCart:     (cart: Cart)  => Promise<Result<Cart>>
+}
+
+const subtractQuantityShellFactory =
+    (steps: ShellSteps) =>
+    (deps: Deps): SubtractQuantityShellFn['asyncSignature'] =>
+    async (input) => {
+        // 1. parse cart id
+        const cartId = steps.parseCartId(input.cartId)
+        if (!cartId.ok) return cartId
+
+        // 2. parse product id
+        const productId = steps.parseProductId(input.productId)
+        if (!productId.ok) return productId
+
+        // 3. parse quantity
+        const quantity = steps.parseQuantity(input.quantity)
+        if (!quantity.ok) return quantity
+
+        // 4. fetch cart from persistence
+        const cart = await deps.findCartById(cartId.value)
+        if (!cart.ok) return cart
+
+        // 5. core domain logic
+        const result = steps.core({ cart: cart.value, productId: productId.value, quantity: quantity.value })
+        if (!result.ok) return result
+
+        // 6. persist result
+        const saved = await deps.saveCart(result.value)
+        if (!saved.ok) return saved
+
+        // Forward successType from core — shell doesn't reclassify
+        return { ok: true, value: saved.value, successType: result.successType }
+    }
+
+export const shellSteps: ShellSteps = {
+    parseCartId, parseProductId, parseQuantity,
+    core: subtractQuantityCore,
+}
+export const makeSubtractQuantity = subtractQuantityShellFactory(shellSteps)
+// App layer: const subtractQuantity = makeSubtractQuantity(realDeps)
+```
 
 ### Factory body rules
 
@@ -190,12 +293,75 @@ Factories use **partial application** to separate concerns. See
 - **The factory body is the only place deps and steps meet**
 - **Single input object** for >1 parameter
 - **No conditional statements in factories.** No `if/else`, `switch`, or
-  ternary for control flow. The only `if` allowed is the short-circuit:
-  `if (!x.ok) return x`. When behavior varies by data, use a strategy step —
-  a `Record<Tag, Handler>` in `Steps`, dispatched by property lookup.
-- **Core factories always end with `evaluateSuccessType`.** The factory body
-  never determines success types inline. That logic lives in a dedicated final step.
-  Shell factories forward `successType` from the core step result.
+  ternary for control flow. Only `if (!x.ok) return x` short-circuits.
+  Use strategy steps for data-dependent behavior.
+- **Core factories always end with `evaluateSuccessType`.**
+  Shell factories forward `successType` from core.
+
+---
+
+## evaluateSuccessType — the final core step
+
+Every core factory ends with `evaluateSuccessType` — a pure step that takes
+the pipeline results and returns the success type(s). It never fails. It classifies.
+
+### Direct implementation
+
+```ts
+export const evaluateSuccessType = (args: {
+    input: CoreInput
+    output: CoreOutput
+}): CoreSuccess[] => {
+    const { input, output } = args
+    if (output.status === 'empty') return ['cart-emptied']
+    if (!output.items.some(i => i.productId === input.productId)) return ['item-removed']
+    return ['quantity-reduced']
+}
+```
+
+### Core factory ending
+
+```ts
+// N. evaluate success type
+const successType = steps.evaluateSuccessType({ input, output: result })
+return { ok: true, value: result, successType }
+```
+
+### Shell forwarding from core
+
+```ts
+// Forward successType from core — shell doesn't reclassify
+return { ok: true, value: saved.value, successType: coreResult.successType }
+```
+
+**Rules:**
+- `evaluateSuccessType` is always the last step in a core factory
+- Shell factories forward `successType` from core — no reclassification
+- It never fails — returns `S[]` directly, no `Result`
+- It lives in `Steps` like any other step — pure, sync, testable
+- Conditions must be exhaustive — every possible output must match
+
+---
+
+## Strategy pattern
+
+When behavior varies by data, declare a `Record<Tag, Handler>` step in `Steps`.
+The factory dispatches by property lookup — no branching.
+
+```ts
+type Steps = {
+    validatePayment: (raw: unknown) => Result<ValidatedPayment>
+    process: Record<PaymentType, (payment: ValidatedPayment) => Result<ProcessedPayment>>
+    evaluateSuccessType: (args: { input: Input; output: Output }) => PaymentSuccess[]
+}
+
+// Factory body — linear, no branching
+// 2. process the payment (dispatched by payment type)
+const processed = steps.process[payment.value.type](payment.value)
+if (!processed.ok) return processed
+```
+
+Each handler is a standalone function with its own spec and tests.
 
 ---
 
@@ -212,54 +378,14 @@ This order ensures each layer's tests pass before the next layer depends on it.
 
 ---
 
-## evaluateSuccessType — the final core step
-
-Every core factory ends with `evaluateSuccessType` — a pure step that takes
-the pipeline results and returns the success type(s). It never fails. It classifies.
-Shell factories forward `successType` from core — no reclassification.
-
-See [examples.md](examples.md) for complete evaluateSuccessType patterns
-(direct implementation, core ending, shell forwarding, spec predicate reuse).
-
-**Rules:**
-- `evaluateSuccessType` is always the last step in a core factory
-- Shell factories forward `successType` from core — no reclassification
-- It never fails — no `Result`, returns `S[]` directly
-- It lives in `Steps` like any other step — pure, sync, testable
-- No `if/else` or `switch` in the factory body to determine success type —
-  that logic belongs in `evaluateSuccessType`
-- **Conditions must be exhaustive.** Every possible successful output must match
-  at least one condition. If no condition matches, `evaluateSuccessType` returns
-  an empty array — the runner's `success type` test will then fail because
-  `result.successType` won't contain the expected key. This is caught at test
-  time, not at compile time — so cover all success paths in your examples.
-
----
-
-## Strategy pattern
-
-When behavior varies by data, declare a `Record<Tag, Handler>` step in `Steps`.
-The factory dispatches by property lookup on the input's discriminant — no
-selection step, no branching.
-
-See [examples.md](examples.md) for the complete strategy pattern example.
-
-**Strategy rules:**
-- Each handler is a standalone function with its own spec and tests
-- The Record is a regular step in `Steps` — wired like any other
-- Dispatch is a property access: `steps.process[value.type](value)`
-- The factory never knows which handler runs — no branching
-
----
-
 ## When tests fail
 
 Diagnose against the spec — not against the test output alone.
 
 **Diagnosis steps:**
-1. Identify the failing test name (constraint key or assertion name)
-2. Find the corresponding constraint/success entry in the spec
-3. Trace the input through the implementation step by step
+1. Identify the failing test name (failure group or assertion name)
+2. Find the corresponding entry in the spec
+3. Trace the `whenInput` through the implementation step by step
 4. Identify the mismatch
 
 **Common failure causes:**
@@ -269,11 +395,12 @@ Diagnose against the spec — not against the test output alone.
 - `successType` not set or wrong value
 - Assertion predicate references a property the implementation doesn't set
 - `then` value in examples doesn't match actual output structure
+- For factories: fake storage data doesn't match the spec's `whenInput` values
 
 **Never:**
 - Change the spec or test files to match the implementation
-- Add a special case without a corresponding spec constraint
-- Skip setting `successType` — the runner may check it
+- Add a special case without a corresponding spec entry
+- Skip setting `successType` — the runner checks it
 
 ---
 
@@ -281,16 +408,15 @@ Diagnose against the spec — not against the test output alone.
 
 When all tests pass:
 
-> "All tests green. [function] is implemented and verified against [N] constraints
-> and [M] success types.
+> "All tests green. [function] is implemented and verified against [N] failure
+> groups and [M] success types.
 >
 > The next step depends on where you are in the pipeline:
 > - More steps to implement? Continue with the next one.
 > - Core factory next? The steps are ready to be wired.
 > - Shell factory next? The core factory is ready to be used as a step.
 > - Ready for documentation? Run **ddd-documentation** to generate the
->   business-friendly spec. Documentation can also be generated earlier —
->   anytime after specs are defined — your call.
+>   business-friendly spec.
 > - Ready for integration? Wire the shell factory with real deps in the app layer."
 
 ---
@@ -298,29 +424,21 @@ When all tests pass:
 ## Hard rules
 
 - **Never modify the spec or test files** for any reason.
+- **Type via `Fn['signature']` or `Fn['asyncSignature']`.** No redundant annotations.
+- **Type error accumulators via `Fn['failures'][]`.** Keeps literals in sync.
 - **Parse functions always accumulate.** No early returns after the structural guard.
 - **Step functions always accumulate.** Same pattern as parse.
 - **Factories always short-circuit.** `if (!x.ok) return x` after every call.
-- **No conditional statements in factory bodies.** No `if/else`, `switch`, or
-  ternary for control flow. Only `if (!x.ok) return x` short-circuits allowed.
-  Use strategy steps (`Record<Tag, Handler>`) for data-dependent behavior.
-- **Core factories always end with `evaluateSuccessType`.** A dedicated final
-  step that classifies the result. Shell factories forward from core.
-- **Every function sets `successType`.** Even simple parse functions:
-  `successType: ['cart-id-parsed']`. Success types are domain events in past
-  tense — what happened, not what is. `cart-id-parsed`, `quantity-reduced`,
-  `cart-activity-confirmed`. Never present tense (`cart-is-active`).
+- **No conditional statements in factory bodies.** Only short-circuit allowed.
+  Use strategy steps for data-dependent behavior.
+- **Core factories always end with `evaluateSuccessType`.** Shell forwards from core.
+- **Every function sets `successType`.** Past-tense domain events.
 - **Never throw anywhere.** All errors are `Result<T, F, S>`.
-- **Use spec predicates in implementation by default.** Import the spec and
-  call its constraint predicates. Only write logic directly when the predicate
-  doesn't fit (and comment why). This keeps spec and implementation in sync.
-- **Never implement a case not covered by a spec constraint.** Scope is the spec.
+- **Never implement a case not covered by a spec entry.** Scope is the spec.
 - **Failure literal strings must exactly match** the `F` union values.
-- **Set `successType`** on all success results.
 - **Single input object** for functions with >1 parameter.
 - **Done means fully green.** Do not hand off with failing tests.
 
 ## Additional resources
 
 - For project conventions, folder structure, and naming rules, see [../ddd-init/reference.md](../ddd-init/reference.md)
-- For complete implementation patterns, see [examples.md](examples.md)

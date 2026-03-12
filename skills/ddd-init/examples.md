@@ -5,424 +5,230 @@ corresponds to a step in SKILL.md.
 
 ---
 
-## shared/spec.ts (Step 2)
+## shared/spec-framework.ts (Step 2)
 
 ```ts
-// shared/spec.ts
+// shared/spec-framework.ts
 
-// ── Result ──────────────────────────────────────────────────────────────────
+// =============================================================================
+// Spec Framework — the shared infrastructure
+// =============================================================================
+
+// -- Result -------------------------------------------------------------------
 
 export type Result<T, F extends string = string, S extends string = string> =
-  | { ok: true; value: T; successType: S[] }
-  | { ok: false; errors: F[] }
+    | { ok: true; value: T; successType: S[] }
+    | { ok: false; errors: F[] }
 
-// ── Spec Predicates ─────────────────────────────────────────────────────────
+// -- SpecFn -------------------------------------------------------------------
 
-export type ConstraintPredicate<In> =
-  (args: { input: In }) => boolean
-
-export type ConditionPredicate<In, Out> =
-  (args: { input: In; output: Out }) => boolean
-
-export type AssertionPredicate<In, Out> =
-  (args: { input: In; output: Out }) => boolean
-
-// ── Example Types ───────────────────────────────────────────────────────────
-
-export type FailureExample<In> = { when: In }
-export type SuccessExample<In, Out> = { when: In; then: Out }
-export type MixedFailureExample<In, F extends string> = {
-  description: string
-  when: In
-  failsWith: F[]
+export type SpecFn<I, O, F extends string, S extends string> = {
+    signature: (i: I) => Result<O, F, S>
+    asyncSignature: (i: I) => Promise<Result<O, F, S>>
+    result: Result<O, F, S>
+    input: I
+    failures: F
+    successTypes: S
+    output: O
 }
-export type DepPropagationExample<In> = { when: In; failsWith: string }
+export type AnyFn = SpecFn<any, any, any, any>
 
-// Non-empty tuple — compiler guarantees at least one example per key
-export type OneOrMore<T> = [T, ...T[]]
+// -- Steps --------------------------------------------------------------------
 
-// ── FunctionSpec — atomic functions ─────────────────────────────────────────
-// Each constraint has its predicate AND its failure examples together.
-// Each success type has its condition, assertions, AND its success examples.
-// The rule and its proof live in one object.
-
-export type FunctionSpec<In, Out, F extends string, S extends string> = {
-  constraints: Record<F, {
-    predicate: ConstraintPredicate<In>
-    examples: OneOrMore<FailureExample<In>>
-  }>
-  successes: Record<S, {
-    condition: ConditionPredicate<In, Out>
-    assertions: Record<string, AssertionPredicate<In, Out>>
-    examples: OneOrMore<SuccessExample<In, Out>>
-  }>
-  mixed?: MixedFailureExample<In, F>[]
+export type StepInfo = {
+    name: string
+    type: 'step' | 'dep' | 'strategy'
+    description: string
+    spec?: Spec<AnyFn>
 }
 
-// ── FactorySpec — factories that compose steps ──────────────────────────────
-// No constraint predicates (inherited from step specs). Failure examples are
-// factory-level inputs that trigger step failures through real steps.
-// No assertions — expected value match suffices for factories.
-// Steps can be atomic (FunctionSpec) or nested factories (FactorySpec).
+// -- Examples -----------------------------------------------------------------
 
-export type StepSpec =
-  | FunctionSpec<any, any, string, string>
-  | FactorySpec<any, any, string, string>
-
-export type FactorySpec<In, Out, F extends string, S extends string> = {
-  steps: Record<string, StepSpec>
-  deps?: Record<string, { failures: string[] }>
-  failures: Record<F, OneOrMore<FailureExample<In>>>
-  successes: Record<S, {
-    condition: ConditionPredicate<In, Out>
-    examples: OneOrMore<SuccessExample<In, Out>>
-  }>
-  mixed?: MixedFailureExample<In, F>[]
+export type FailExample<Fn extends AnyFn> = {
+    description: string
+    whenInput: Fn['input']
 }
 
-// ── ShellFactorySpec — shell factories with dep propagation ─────────────────
+export type SuccessExample<Fn extends AnyFn> = {
+    description: string
+    whenInput: Fn['input']
+    then: Fn['output']
+}
 
-export type ShellFactorySpec<
-  In, Out, F extends string, S extends string,
-  Deps extends Record<string, any>
-> = FactorySpec<In, Out, F, S> & {
-  baseDeps: Deps
-  depPropagation: Record<keyof Deps, DepPropagationExample<In>>
+// -- Groups -------------------------------------------------------------------
+
+export type FailGroup<Fn extends AnyFn> = {
+    description: string
+    examples: FailExample<Fn>[]
+    coveredBy?: string
+}
+
+export type SuccessGroup<Fn extends AnyFn> = {
+    description: string
+    examples: SuccessExample<Fn>[]
+}
+
+// -- Assertions ---------------------------------------------------------------
+
+export type SpecAssert<Fn extends AnyFn> = (input: Fn['input'], output: Fn['output']) => boolean
+
+export type AssertionGroup<Fn extends AnyFn> = {
+    [k: string]: {
+        description: string
+        assert: SpecAssert<Fn>
+    }
+}
+
+// -- Spec ---------------------------------------------------------------------
+// Behavioral contract + optional algorithm decomposition.
+// steps is the "how" — visible, reviewable, and the source for auto-inherited failures.
+// When steps is present, shouldFailWith is partial — inherited failures are resolved at runtime.
+
+export type Spec<Fn extends AnyFn> = {
+    steps?: StepInfo[]
+    shouldFailWith: Partial<Record<Fn['failures'], FailGroup<Fn>>>
+    shouldSucceedWith: Record<Fn['successTypes'], SuccessGroup<Fn>>
+    shouldAssert: Record<Fn['successTypes'], AssertionGroup<Fn>>
+}
+
+// -- inheritFromSteps() -------------------------------------------------------
+// Auto-inherits failure groups from all step specs in a steps array.
+// Each step's failures get empty examples + coveredBy set to step name.
+// Recurses into nested step specs (fractal composition).
+
+export const inheritFromSteps = (steps: StepInfo[]): Record<string, FailGroup<any>> => {
+    const result: Record<string, FailGroup<any>> = {}
+    for (const step of steps) {
+        if (!step.spec) continue
+        // Direct failures from this step
+        for (const [key, group] of Object.entries(step.spec.shouldFailWith) as [string, FailGroup<any>][]) {
+            if (!(key in result)) {
+                result[key] = {
+                    description: group.description,
+                    examples: [],
+                    coveredBy: step.name,
+                }
+            }
+        }
+        // Recurse into nested steps
+        if (step.spec.steps) {
+            const nested = inheritFromSteps(step.spec.steps)
+            for (const [key, group] of Object.entries(nested)) {
+                if (!(key in result)) {
+                    result[key] = {
+                        ...group,
+                        coveredBy: `${step.name} -> ${group.coveredBy}`,
+                    }
+                }
+            }
+        }
+    }
+    return result
+}
+
+// -- testSpec -----------------------------------------------------------------
+// Universal runner. Handles both sync (Fn['signature']) and async (Fn['asyncSignature']).
+// Usage:
+//   testSpec('checkActive', checkActiveSpec, checkActive)           — sync atomic
+//   testSpec('subtractQtyCore', coreSpec, subtractQtyCore)          — sync factory
+//   testSpec('subtractQtyShell', shellSpec, subtractQtyShell)       — async factory
+
+export const testSpec = <Fn extends AnyFn>(
+    name: string,
+    spec: Spec<Fn>,
+    fn: Fn['signature'] | Fn['asyncSignature'],
+) => {
+    // Normalize to async for uniform handling
+    const run = async (input: Fn['input']): Promise<Fn['result']> => fn(input) as any
+
+    // -- Resolve failures: merge inherited from steps + explicit overrides -----
+    const resolvedFailures: Record<string, FailGroup<Fn>> = {}
+
+    if (spec.steps) {
+        const inherited = inheritFromSteps(spec.steps)
+        for (const [key, group] of Object.entries(inherited)) {
+            resolvedFailures[key] = group
+        }
+    }
+
+    // Explicit entries override inherited ones
+    for (const [key, group] of Object.entries(spec.shouldFailWith) as [string, FailGroup<Fn>][]) {
+        if (group) resolvedFailures[key] = group
+    }
+
+    describe(name, () => {
+        // -- Failures ---------------------------------------------------------
+        describe('failures', () => {
+            for (const [failure, group] of Object.entries(resolvedFailures) as [Fn['failures'], FailGroup<Fn>][]) {
+                if (group.examples.length > 0) {
+                    describe(`${failure} — ${group.description}`, () => {
+                        for (const example of group.examples) {
+                            test(example.description, async () => {
+                                const result = await run(example.whenInput)
+                                expect(result.ok).toBe(false)
+                                if (!result.ok) {
+                                    expect(result.errors).toContain(failure)
+                                }
+                            })
+                        }
+                    })
+                } else if (group.coveredBy) {
+                    test.skip(`${failure} — ${group.description} (covered by ${group.coveredBy})`, () => {})
+                } else {
+                    test.todo(`${failure} — ${group.description}`)
+                }
+            }
+        })
+
+        // -- Successes --------------------------------------------------------
+        describe('successes', () => {
+            for (const [success, group] of Object.entries(spec.shouldSucceedWith) as [Fn['successTypes'], SuccessGroup<Fn>][]) {
+                describe(`${success} — ${group.description}`, () => {
+                    for (const example of group.examples) {
+                        test(example.description, async () => {
+                            const result = await run(example.whenInput)
+                            expect(result.ok).toBe(true)
+                            if (result.ok) {
+                                expect(result.successType).toContain(success)
+                                expect(result.value).toEqual(example.then)
+                            }
+                        })
+                    }
+
+                    const assertions = spec.shouldAssert[success]
+                    if (assertions) {
+                        for (const [_, assertion] of Object.entries(assertions)) {
+                            for (const example of group.examples) {
+                                test(`${example.description} — ${assertion.description}`, async () => {
+                                    const result = await run(example.whenInput)
+                                    expect(result.ok).toBe(true)
+                                    if (result.ok) {
+                                        expect(assertion.assert(example.whenInput, result.value)).toBe(true)
+                                    }
+                                })
+                            }
+                        }
+                    }
+                })
+            }
+        })
+    })
 }
 ```
 
 ---
 
-## shared/testing.ts (Step 3)
-
-```ts
-// shared/testing.ts
-
-import type {
-  Result, FunctionSpec, FactorySpec, ShellFactorySpec,
-} from './spec'
-
-// ── runSpec — atomic functions (sync) ────────────────────────────────────────
-// Reads predicates and examples from the spec itself — no separate examples arg.
-
-export const runSpec = <In, Out, F extends string, S extends string>(
-  fn:   (input: In) => Result<Out, F, S>,
-  spec: FunctionSpec<In, Out, F, S>,
-): void => {
-  describe('failures', () => {
-    for (const [failure, constraint] of Object.entries(spec.constraints) as [F, { predicate: any; examples: { when: In }[] }][]) {
-      describe(failure, () => {
-        constraint.examples.forEach((example, i) => {
-          const label = constraint.examples.length === 1 ? failure : `${failure} [${i + 1}]`
-          test(label, () => {
-            const result = fn(example.when)
-            expect(result.ok).toBe(false)
-            if (!result.ok) expect(result.errors).toContain(failure)
-          })
-        })
-      })
-    }
-  })
-
-  if (spec.mixed && spec.mixed.length > 0) {
-    describe('mixed failures', () => {
-      for (const example of spec.mixed!) {
-        test(example.description, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(false)
-          if (!result.ok) {
-            for (const f of example.failsWith) {
-              expect(result.errors).toContain(f)
-            }
-          }
-        })
-      }
-    })
-  }
-
-  for (const [successType, successSpec] of Object.entries(spec.successes) as [S, any][]) {
-    describe(successType, () => {
-      successSpec.examples.forEach((example: { when: In; then: Out }, i: number) => {
-        const suffix = successSpec.examples.length > 1 ? ` [${i + 1}]` : ''
-
-        test(`condition${suffix}`, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok)
-            expect(successSpec.condition({ input: example.when, output: result.value })).toBe(true)
-        })
-
-        for (const [name, assertion] of Object.entries(successSpec.assertions ?? {}) as [string, any][]) {
-          test(`${name}${suffix}`, () => {
-            const result = fn(example.when)
-            expect(result.ok).toBe(true)
-            if (result.ok)
-              expect(assertion({ input: example.when, output: result.value })).toBe(true)
-          })
-        }
-
-        test(`expected value${suffix}`, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.value).toEqual(example.then)
-        })
-
-        test(`success type${suffix}`, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.successType).toContain(successType)
-        })
-      })
-    })
-  }
-}
-
-// ── runSpecAsync — async atomic functions ────────────────────────────────────
-
-export const runSpecAsync = <In, Out, F extends string, S extends string>(
-  fn:   (input: In) => Promise<Result<Out, F, S>>,
-  spec: FunctionSpec<In, Out, F, S>,
-): void => {
-  describe('failures', () => {
-    for (const [failure, constraint] of Object.entries(spec.constraints) as [F, { predicate: any; examples: { when: In }[] }][]) {
-      describe(failure, () => {
-        constraint.examples.forEach((example, i) => {
-          const label = constraint.examples.length === 1 ? failure : `${failure} [${i + 1}]`
-          test(label, async () => {
-            const result = await fn(example.when)
-            expect(result.ok).toBe(false)
-            if (!result.ok) expect(result.errors).toContain(failure)
-          })
-        })
-      })
-    }
-  })
-
-  if (spec.mixed && spec.mixed.length > 0) {
-    describe('mixed failures', () => {
-      for (const example of spec.mixed!) {
-        test(example.description, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(false)
-          if (!result.ok) {
-            for (const f of example.failsWith) {
-              expect(result.errors).toContain(f)
-            }
-          }
-        })
-      }
-    })
-  }
-
-  for (const [successType, successSpec] of Object.entries(spec.successes) as [S, any][]) {
-    describe(successType, () => {
-      successSpec.examples.forEach((example: { when: In; then: Out }, i: number) => {
-        const suffix = successSpec.examples.length > 1 ? ` [${i + 1}]` : ''
-
-        test(`condition${suffix}`, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok)
-            expect(successSpec.condition({ input: example.when, output: result.value })).toBe(true)
-        })
-
-        for (const [name, assertion] of Object.entries(successSpec.assertions ?? {}) as [string, any][]) {
-          test(`${name}${suffix}`, async () => {
-            const result = await fn(example.when)
-            expect(result.ok).toBe(true)
-            if (result.ok)
-              expect(assertion({ input: example.when, output: result.value })).toBe(true)
-          })
-        }
-
-        test(`expected value${suffix}`, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.value).toEqual(example.then)
-        })
-
-        test(`success type${suffix}`, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.successType).toContain(successType)
-        })
-      })
-    })
-  }
-}
-
-// ── runFactorySpec — core factories (sync) ──────────────────────────────────
-// Factories have `failures` (examples only, no predicates) instead of `constraints`.
-// No assertions — conditions + expected value match only.
-
-export const runFactorySpec = <In, Out, F extends string, S extends string>(
-  fn:   (input: In) => Result<Out, F, S>,
-  spec: FactorySpec<In, Out, F, S>,
-): void => {
-  describe('failures', () => {
-    for (const [failure, failureExamples] of Object.entries(spec.failures) as [F, { when: In }[]][]) {
-      describe(failure, () => {
-        failureExamples.forEach((example, i) => {
-          const label = failureExamples.length === 1 ? failure : `${failure} [${i + 1}]`
-          test(label, () => {
-            const result = fn(example.when)
-            expect(result.ok).toBe(false)
-            if (!result.ok) expect(result.errors).toContain(failure)
-          })
-        })
-      })
-    }
-  })
-
-  if (spec.mixed && spec.mixed.length > 0) {
-    describe('mixed failures', () => {
-      for (const example of spec.mixed!) {
-        test(example.description, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(false)
-          if (!result.ok) {
-            for (const f of example.failsWith) {
-              expect(result.errors).toContain(f)
-            }
-          }
-        })
-      }
-    })
-  }
-
-  for (const [successType, successSpec] of Object.entries(spec.successes) as [S, any][]) {
-    describe(successType, () => {
-      successSpec.examples.forEach((example: { when: In; then: Out }, i: number) => {
-        const suffix = successSpec.examples.length > 1 ? ` [${i + 1}]` : ''
-
-        test(`condition${suffix}`, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok)
-            expect(successSpec.condition({ input: example.when, output: result.value })).toBe(true)
-        })
-
-        test(`expected value${suffix}`, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.value).toEqual(example.then)
-        })
-
-        test(`success type${suffix}`, () => {
-          const result = fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.successType).toContain(successType)
-        })
-      })
-    })
-  }
-}
-
-// ── runFactorySpecAsync — async factories ───────────────────────────────────
-
-export const runFactorySpecAsync = <In, Out, F extends string, S extends string>(
-  fn:   (input: In) => Promise<Result<Out, F, S>>,
-  spec: FactorySpec<In, Out, F, S>,
-): void => {
-  describe('failures', () => {
-    for (const [failure, failureExamples] of Object.entries(spec.failures) as [F, { when: In }[]][]) {
-      describe(failure, () => {
-        failureExamples.forEach((example, i) => {
-          const label = failureExamples.length === 1 ? failure : `${failure} [${i + 1}]`
-          test(label, async () => {
-            const result = await fn(example.when)
-            expect(result.ok).toBe(false)
-            if (!result.ok) expect(result.errors).toContain(failure)
-          })
-        })
-      })
-    }
-  })
-
-  if (spec.mixed && spec.mixed.length > 0) {
-    describe('mixed failures', () => {
-      for (const example of spec.mixed!) {
-        test(example.description, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(false)
-          if (!result.ok) {
-            for (const f of example.failsWith) {
-              expect(result.errors).toContain(f)
-            }
-          }
-        })
-      }
-    })
-  }
-
-  for (const [successType, successSpec] of Object.entries(spec.successes) as [S, any][]) {
-    describe(successType, () => {
-      successSpec.examples.forEach((example: { when: In; then: Out }, i: number) => {
-        const suffix = successSpec.examples.length > 1 ? ` [${i + 1}]` : ''
-
-        test(`condition${suffix}`, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok)
-            expect(successSpec.condition({ input: example.when, output: result.value })).toBe(true)
-        })
-
-        test(`expected value${suffix}`, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.value).toEqual(example.then)
-        })
-
-        test(`success type${suffix}`, async () => {
-          const result = await fn(example.when)
-          expect(result.ok).toBe(true)
-          if (result.ok) expect(result.successType).toContain(successType)
-        })
-      })
-    })
-  }
-}
-
-// ── runShellSpec — shell factories (async + dep propagation) ────────────────
-// Reads baseDeps and depPropagation from the spec itself.
-
-export const runShellSpec = <
-  In, Out, F extends string, S extends string,
-  Deps extends Record<string, any>
->(
-  fn:     (input: In) => Promise<Result<Out, F, S>>,
-  makeFn: (deps: Deps) => (input: In) => Promise<Result<Out, F, S>>,
-  spec:   ShellFactorySpec<In, Out, F, S, Deps>,
-): void => {
-  runFactorySpecAsync(fn, spec)
-
-  describe('dep propagation', () => {
-    for (const [depName, prop] of Object.entries(spec.depPropagation) as [string, { when: In; failsWith: string }][]) {
-      test(`propagates ${depName} failure`, async () => {
-        const override = { [depName]: async () => ({ ok: false, errors: [prop.failsWith] }) }
-        const fn = makeFn({ ...spec.baseDeps, ...override } as Deps)
-        const result = await fn(prop.when)
-        expect(result.ok).toBe(false)
-        if (!result.ok) expect(result.errors).toContain(prop.failsWith)
-      })
-    }
-  })
-}
-```
-
----
-
-## scripts/spec-tools.ts (Step 4)
+## scripts/spec-tools.ts (Step 3)
 
 ```ts
 // scripts/spec-tools.ts
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// -- Types --------------------------------------------------------------------
 
 export type FlatConstraint = {
-  step:    string    // 'parseCartId', 'checkActive', 'findCartById'
-  failure: string    // 'not_a_string', 'cart_empty', 'find_failed'
-  type:    'step' | 'dep'
+  step:    string    // 'parseCartId', 'checkActive', 'findCart'
+  failure: string    // 'not_a_string', 'cart_empty', 'cart_not_found'
+  type:    'step' | 'dep' | 'strategy'
 }
 
 export type FlatTable = {
@@ -430,61 +236,86 @@ export type FlatTable = {
   successes: string[]
 }
 
-// ── flattenSpec ──────────────────────────────────────────────────────────────
-// Recursively walks factory spec tree, collecting constraints in pipeline order.
+// -- flattenSpec --------------------------------------------------------------
+// Recursively walks a Spec's steps array, collecting failures in pipeline order.
 
 export function flattenSpec(spec: any): FlatTable {
   return {
-    columns:   flattenConstraints(spec),
-    successes: Object.keys(spec.successes),
+    columns:   flattenSteps(spec),
+    successes: Object.keys(spec.shouldSucceedWith),
   }
 }
 
-function flattenConstraints(spec: any): FlatConstraint[] {
+function flattenSteps(spec: any): FlatConstraint[] {
   const result: FlatConstraint[] = []
 
-  for (const [name, stepSpec] of Object.entries(spec.steps || {}) as any[]) {
-    if (stepSpec.steps) {
-      // Recursive — this step is itself a factory (e.g. core inside shell)
-      result.push(...flattenConstraints(stepSpec))
-    } else {
-      for (const failure of Object.keys(stepSpec.constraints || {})) {
-        result.push({ step: name, failure, type: 'step' })
+  if (!spec.steps) {
+    // Atomic spec — collect directly from shouldFailWith
+    for (const failure of Object.keys(spec.shouldFailWith || {})) {
+      result.push({ step: '(self)', failure, type: 'step' })
+    }
+    return result
+  }
+
+  for (const step of spec.steps as any[]) {
+    if (step.spec) {
+      if (step.spec.steps) {
+        // Recursive — this step is itself a composed spec (e.g. core inside shell)
+        const nested = flattenSteps(step.spec)
+        for (const entry of nested) {
+          result.push({ ...entry, step: `${step.name}.${entry.step}` })
+        }
+      } else {
+        // Atomic step spec — collect from shouldFailWith
+        for (const failure of Object.keys(step.spec.shouldFailWith || {})) {
+          result.push({ step: step.name, failure, type: step.type })
+        }
       }
+    } else {
+      // Dep or step without spec — check if parent spec declares failures for it
+      // These are own failures declared directly in the composed spec's shouldFailWith
+      result.push({ step: step.name, failure: `(${step.name})`, type: step.type })
     }
   }
 
-  for (const [name, depSpec] of Object.entries(spec.deps || {}) as any[]) {
-    for (const failure of depSpec.failures) {
-      result.push({ step: name, failure, type: 'dep' })
+  // Also collect own failures from the composed spec that aren't inherited
+  // (e.g. cart_not_found, product_not_in_cart)
+  const inheritedKeys = new Set(result.map(r => r.failure))
+  for (const [failure, group] of Object.entries(spec.shouldFailWith || {}) as any[]) {
+    if (group && !inheritedKeys.has(failure)) {
+      // Determine which step owns this failure based on coveredBy, or mark as own
+      result.push({ step: '(own)', failure, type: 'step' })
     }
   }
 
   return result
 }
 
-// ── toMarkdownTable ──────────────────────────────────────────────────────────
-// Converts flat table to decision table markdown with ✓/✗/— symbols.
+// -- toMarkdownTable ----------------------------------------------------------
+// Converts flat table to decision table markdown with symbols.
 
 export function toMarkdownTable(table: FlatTable): string {
   const { columns, successes } = table
 
+  // Filter out placeholder entries
+  const realColumns = columns.filter(c => !c.failure.startsWith('('))
+
   const header = [
     'Scenario',
-    ...columns.map(c => `\`${c.step}\` :${c.failure}`),
+    ...realColumns.map(c => `\`${c.step}\` :${c.failure}`),
     'Outcome',
   ]
-  const separator = ['---', ...columns.map(() => ':---:'), '---']
+  const separator = ['---', ...realColumns.map(() => ':---:'), '---']
 
   const successRows = successes.map(s => [
-    `✅ ${s}`,
-    ...columns.map(() => '✓'),
+    `OK ${s}`,
+    ...realColumns.map(() => 'pass'),
     s,
   ])
 
-  const failureRows = columns.map((c, i) => [
-    `❌ ${c.failure}`,
-    ...columns.map((_, j) => j < i ? '✓' : j === i ? '✗' : '—'),
+  const failureRows = realColumns.map((c, i) => [
+    `FAIL ${c.failure}`,
+    ...realColumns.map((_, j) => j < i ? 'pass' : j === i ? 'FAIL' : '--'),
     `Fails: \`${c.failure}\``,
   ])
 
@@ -492,27 +323,37 @@ export function toMarkdownTable(table: FlatTable): string {
   return rows.map(r => `| ${r.join(' | ')} |`).join('\n')
 }
 
-// ── toStepTable ──────────────────────────────────────────────────────────────
-// Extracts pipeline step table from a factory spec (for §4 and §5 of .spec.md).
+// -- toStepTable --------------------------------------------------------------
+// Extracts pipeline step table from a spec's steps array.
 
 export function toStepTable(spec: any): string {
+  if (!spec.steps) return '_Atomic function — no pipeline steps._'
+
   const rows: string[][] = [
-    ['#', 'Name', 'Type', 'Failure Codes'],
-    ['---', '---', '---', '---'],
+    ['#', 'Name', 'Type', 'Description', 'Failure Codes'],
+    ['---', '---', '---', '---', '---'],
   ]
-  let index = 1
 
-  for (const [name, stepSpec] of Object.entries(spec.steps || {}) as any[]) {
-    const failures = stepSpec.steps
-      ? flattenConstraints(stepSpec).map(c => c.failure)
-      : Object.keys(stepSpec.constraints || {})
-    const failStr = failures.length > 0 ? failures.map(f => `\`${f}\``).join(', ') : '—'
-    rows.push([String(index++), `\`${name}\``, '`STEP`', failStr])
-  }
+  for (let i = 0; i < spec.steps.length; i++) {
+    const step = spec.steps[i]
+    let failures: string[] = []
 
-  for (const [name, depSpec] of Object.entries(spec.deps || {}) as any[]) {
-    const failStr = depSpec.failures.map((f: string) => `\`${f}\``).join(', ') || '—'
-    rows.push([String(index++), `\`${name}\``, '`DEP`', failStr])
+    if (step.spec) {
+      if (step.spec.steps) {
+        failures = flattenSteps(step.spec)
+          .filter(c => !c.failure.startsWith('('))
+          .map(c => c.failure)
+      } else {
+        failures = Object.keys(step.spec.shouldFailWith || {})
+      }
+    }
+
+    const failStr = failures.length > 0
+      ? failures.map(f => `\`${f}\``).join(', ')
+      : '--'
+    const typeStr = `\`${step.type.toUpperCase()}\``
+
+    rows.push([String(i + 1), `\`${step.name}\``, typeStr, step.description, failStr])
   }
 
   return rows.map(r => `| ${r.join(' | ')} |`).join('\n')
@@ -521,13 +362,14 @@ export function toStepTable(spec: any): string {
 
 ---
 
-## scripts/spec-manifest.ts (Step 5)
+## scripts/spec-manifest.ts (Step 4)
 
 ```ts
 // scripts/spec-manifest.ts
 //
-// Add one entry per factory spec. The generate-specs script reads this manifest,
-// imports each spec, and writes the .spec.md decision tables next to the spec file.
+// Add one entry per composed spec (factory). The generate-specs script reads
+// this manifest, imports each spec, and writes the .spec.md decision tables
+// next to the spec file.
 //
 // Output path is derived from specPath: same directory, .spec.md extension.
 
@@ -549,125 +391,44 @@ export const specManifest: ManifestEntry[] = [
 
 ---
 
-## scripts/generate-specs.ts (Step 6)
+## scripts/generate-specs.ts (Step 5)
+
+Fully generated structural docs — pipeline tables and decision tables.
+Overwrites the `.spec.md` on every run. No prose, no markers, no manual editing.
 
 ```ts
 // scripts/generate-specs.ts
 
-import { writeFileSync, readFileSync, existsSync } from 'fs'
-import { resolve, dirname, relative } from 'path'
+import { writeFileSync, mkdirSync } from 'fs'
+import { resolve } from 'path'
 import { flattenSpec, toMarkdownTable, toStepTable } from './spec-tools'
 import { specManifest } from './spec-manifest'
 
-const DOCS_SPECS_PATH = resolve(__dirname, '../docs/specs.ts')
+function buildSpecMd(name: string, spec: any): string {
+  const pipeline = toStepTable(spec)
+  const table = flattenSpec(spec)
+  const decision = toMarkdownTable(table)
 
-const MARKER_BEGIN = (section: string) => `<!-- BEGIN:GENERATED:${section} -->`
-const MARKER_END   = (section: string) => `<!-- END:GENERATED:${section} -->`
-const STALE_MARKER = '<!-- ⚠ STALE: Generated sections (§4-§5) changed — review this prose section. Run ddd-documentation to update. -->'
-
-function generateSection(tag: string, content: string): string {
-  return `${MARKER_BEGIN(tag)}\n${content}\n${MARKER_END(tag)}`
-}
-
-function extractGeneratedContent(file: string, tag: string): string {
-  const begin = MARKER_BEGIN(tag)
-  const end = MARKER_END(tag)
-  const regex = new RegExp(
-    `${escapeRegex(begin)}\\n([\\s\\S]*?)\\n${escapeRegex(end)}`
-  )
-  const match = file.match(regex)
-  return match ? match[1] : ''
-}
-
-function replaceGeneratedSections(existing: string, sections: Record<string, string>): {
-  content: string
-  changed: boolean
-} {
-  let result = existing
-  let changed = false
-
-  for (const [tag, content] of Object.entries(sections)) {
-    const oldContent = extractGeneratedContent(existing, tag)
-    if (oldContent !== content) changed = true
-
-    const begin = MARKER_BEGIN(tag)
-    const end = MARKER_END(tag)
-    const regex = new RegExp(
-      `${escapeRegex(begin)}[\\s\\S]*?${escapeRegex(end)}`,
-      'g'
-    )
-    if (result.includes(begin)) {
-      result = result.replace(regex, generateSection(tag, content))
-    } else {
-      result += '\n\n' + generateSection(tag, content)
-    }
-  }
-
-  return { content: result, changed }
-}
-
-// When generated sections change, inject a staleness marker above each
-// prose section (§1-§3) so authors know the prose may need updating.
-function addStaleMarkers(content: string): string {
-  // First remove any existing stale markers to avoid duplication
-  let result = removeStaleMarkers(content)
-
-  // Add marker before each prose section heading
-  for (const heading of ['## 1. Overview', '## 2. Operation Interface', '## 3. Business Scenarios']) {
-    result = result.replace(heading, `${STALE_MARKER}\n\n${heading}`)
-  }
-
-  return result
-}
-
-function removeStaleMarkers(content: string): string {
-  return content.replace(new RegExp(escapeRegex(STALE_MARKER) + '\\n\\n?', 'g'), '')
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function newSpecMd(name: string, sections: Record<string, string>): string {
   return `# ${name}
 
-> **Operation Specification**
+> Auto-generated from \`${name}.spec.ts\`. Do not edit — run \`npm run gen:specs\` to regenerate.
+> For business-friendly documentation, see \`/docs/\`.
 
 ---
 
-## 1. Overview
+## Pipeline
 
-<!-- TODO: run ddd-documentation to fill this section -->
-
----
-
-## 2. Operation Interface
-
-<!-- TODO: run ddd-documentation to fill this section -->
+${pipeline}
 
 ---
 
-## 3. Business Scenarios
+## Decision Table
 
-<!-- TODO: run ddd-documentation to fill this section -->
-
----
-
-## 4. Pipeline
-
-${generateSection('PIPELINE', sections.PIPELINE)}
-
----
-
-## 5. Decision Tables
-
-${generateSection('DECISION', sections.DECISION)}
+${decision}
 `
 }
 
-// ── Manifest validation ──────────────────────────────────────────────────────
-// Checks every manifest entry points to a real file with the expected export.
-// Runs before any generation — catches stale entries from renames or deletions.
+// -- Manifest validation ------------------------------------------------------
 
 function validateManifest(): { valid: typeof specManifest; errors: string[] } {
   const valid: typeof specManifest = []
@@ -678,14 +439,14 @@ function validateManifest(): { valid: typeof specManifest; errors: string[] } {
     try {
       resolvedPath = require.resolve(entry.specPath)
     } catch {
-      errors.push(`✗ ${entry.name}: file not found — ${entry.specPath}`)
+      errors.push(`x ${entry.name}: file not found — ${entry.specPath}`)
       continue
     }
 
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod = require(resolvedPath)
     if (!mod[entry.exportName]) {
-      errors.push(`✗ ${entry.name}: export '${entry.exportName}' not found in ${resolvedPath}`)
+      errors.push(`x ${entry.name}: export '${entry.exportName}' not found in ${resolvedPath}`)
       continue
     }
 
@@ -701,7 +462,6 @@ async function main() {
     return
   }
 
-  // Validate manifest before doing any work
   const { valid: validEntries, errors: manifestErrors } = validateManifest()
   if (manifestErrors.length > 0) {
     console.error('\nManifest validation failed:')
@@ -710,64 +470,17 @@ async function main() {
     process.exit(1)
   }
 
-  const generatedPaths: Record<string, string> = {}
-
   for (const entry of validEntries) {
     const mod = await import(entry.specPath)
     const spec = mod[entry.exportName]
 
-    const table = flattenSpec(spec)
-    const pipelineContent = toStepTable(spec)
-    const decisionContent = toMarkdownTable(table)
-
-    const sections = {
-      PIPELINE: pipelineContent,
-      DECISION: decisionContent,
-    }
-
-    // Resolve output path: same dir as spec, .spec.md extension
     const specFile = require.resolve(entry.specPath)
     const mdPath = specFile.replace(/\.spec\.ts$/, '.spec.md')
 
-    if (existsSync(mdPath)) {
-      const existing = readFileSync(mdPath, 'utf-8')
-      const { content: updated, changed } = replaceGeneratedSections(existing, sections)
-
-      if (changed) {
-        // Generated content changed — mark prose sections as potentially stale
-        const withMarkers = addStaleMarkers(updated)
-        writeFileSync(mdPath, withMarkers)
-        console.log(`✓ ${entry.name}: updated generated sections in ${mdPath}`)
-        console.log(`  ⚠ Prose sections (§1-§3) may be stale — run ddd-documentation to review`)
-      } else {
-        console.log(`· ${entry.name}: no changes`)
-      }
-    } else {
-      const content = newSpecMd(entry.name, sections)
-      writeFileSync(mdPath, content)
-      console.log(`✓ ${entry.name}: created ${mdPath}`)
-    }
-
-    // Track for docs/specs.ts — path relative to project root
-    const projectRoot = resolve(__dirname, '..')
-    generatedPaths[entry.name] = relative(projectRoot, mdPath)
+    const content = buildSpecMd(entry.name, spec)
+    writeFileSync(mdPath, content)
+    console.log(`  ${entry.name}: wrote ${mdPath}`)
   }
-
-  // Update docs/specs.ts — the documentation registry
-  const entries = Object.entries(generatedPaths)
-    .map(([name, path]) => `  '${name}': '${path}',`)
-    .join('\n')
-  const docsContent = `// docs/specs.ts
-//
-// Documentation registry — lists all generated .spec.md files.
-// Auto-updated by \`npm run gen:specs\`. Do not edit manually.
-
-export const specDocs: Record<string, string> = {
-${entries}
-}
-`
-  writeFileSync(DOCS_SPECS_PATH, docsContent)
-  console.log(`✓ docs/specs.ts: updated with ${Object.keys(generatedPaths).length} entries`)
 }
 
 main().catch(err => {
@@ -778,7 +491,7 @@ main().catch(err => {
 
 ---
 
-## scripts/tsconfig.json (Step 7)
+## scripts/tsconfig.json (Step 6)
 
 ```json
 {
@@ -798,15 +511,35 @@ main().catch(err => {
 
 ---
 
-## docs/specs.ts (Step 8)
+## docs/ directory (Step 7)
 
-```ts
-// docs/specs.ts
-//
-// Documentation registry — lists all generated .spec.md files.
-// Auto-updated by `npm run gen:specs`. Do not edit manually.
+### docs/_config.yml
 
-export const specDocs: Record<string, string> = {
-  // Populated automatically from the spec manifest
-}
+```yaml
+title: Domain Specs
+description: Business-friendly operation specifications
+theme: just-the-docs
+
+nav_external_links: []
+```
+
+### docs/index.md
+
+```md
+---
+title: Home
+nav_order: 1
+---
+
+# Domain Specifications
+
+Business-friendly documentation for all domain operations.
+
+Each aggregate has its own section. Each operation within an aggregate
+has a dedicated page covering overview, interface, business scenarios,
+pipeline, and decision tables.
+
+---
+
+*Generated with [ddd-documentation](../.claude/skills-v4/ddd-documentation/SKILL.md).*
 ```

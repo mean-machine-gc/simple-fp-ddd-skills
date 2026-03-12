@@ -1,7 +1,7 @@
 ---
 name: ddd-init
 description: >
-  Initializes DDD project infrastructure: shared type files (spec.ts, testing.ts),
+  Initializes DDD project infrastructure: spec-framework.ts (types + runner),
   CLI spec generation scripts, automation hooks, and dev dependencies. Idempotent —
   safe to run multiple times. Run once before using any other ddd skill.
 ---
@@ -27,8 +27,7 @@ This skill runs once per project. All other skills assume these files exist.
 Check which of these files already exist:
 
 ```
-src/shared/spec.ts
-src/shared/testing.ts
+src/shared/spec-framework.ts
 scripts/spec-tools.ts
 scripts/spec-manifest.ts
 scripts/generate-specs.ts
@@ -39,84 +38,68 @@ docs/specs.ts
 
 Report status before proceeding:
 > "Here's what I found:
-> - `shared/spec.ts` — missing (will create)
-> - `shared/testing.ts` — exists (will check content)
+> - `shared/spec-framework.ts` — missing (will create)
+> - `scripts/spec-tools.ts` — exists (will check content)
 > - ..."
 
 ---
 
-## Step 2 — Create `shared/spec.ts`
+## Step 2 — Create `shared/spec-framework.ts`
 
-Core type definitions used by all other files: `Result<T, F, S>`, spec predicates
-(`ConstraintPredicate`, `ConditionPredicate`, `AssertionPredicate`), `FunctionSpec`
-(constraints with predicates + inline examples), `FactorySpec` (steps + inline failure
-examples), `ShellFactorySpec` (factory + baseDeps + dep propagation), `StepSpec`
-(union of both — used in `FactorySpec.steps` to allow nesting), and example types
-(`FailureExample`, `SuccessExample`, `MixedFailureExample`, `OneOrMore`).
+The single infrastructure file. Contains all types (`Result`, `SpecFn`, `Spec`,
+`StepInfo`, example types, assertion types) AND the test runner (`testSpec`) AND
+the `inheritFromSteps` utility.
 
-See [examples.md](examples.md) for the complete file contents.
-
----
-
-## Step 3 — Create `shared/testing.ts`
-
-Test runners that read predicates and examples directly from the spec object.
-Exports `runSpec` (sync atomic), `runSpecAsync` (async atomic), `runFactorySpec`
-(sync factory), `runFactorySpecAsync` (async factory), and `runShellSpec`
-(async factory + dep propagation).
-
-For each success example, runners verify up to four things:
-1. Condition predicate returns `true`
-2. Spec assertions pass (atomic functions only — factories skip this)
-3. `result.value` matches the expected `then` value
-4. `result.successType` contains the expected success type key
+This replaces v3's two files (`spec.ts` + `testing.ts`) with one unified module.
 
 See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 4 — Create `scripts/spec-tools.ts`
+## Step 3 — Create `scripts/spec-tools.ts`
 
 Pure functions for spec tree flattening and markdown generation:
-- `flattenSpec` — recursively walks factory spec tree, collects constraints in pipeline order
-- `toMarkdownTable` — converts flat table to decision table markdown with ✓/✗/— symbols
-- `toStepTable` — extracts pipeline step table for §4/§5 of `.spec.md`
+- `flattenSpec` — walks the `steps` array recursively, collects failures in pipeline order
+- `toMarkdownTable` — converts flat table to decision table markdown with symbols
+- `toStepTable` — extracts pipeline step table from `StepInfo[]`
+
+Adapts to v4's `steps: StepInfo[]` array (not v3's `Record<string, StepSpec>`).
+Walks step specs via `step.spec.shouldFailWith` and recurses via `step.spec.steps`.
 
 See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 5 — Create `scripts/spec-manifest.ts`
+## Step 4 — Create `scripts/spec-manifest.ts`
 
-The manifest is the single registry of all factory specs. One `ManifestEntry` per
-factory with `name`, `specPath`, and `exportName`. Starts empty — `ddd-spec` adds
-entries when it creates factory specs.
+The manifest is the single registry of all composed specs (factories). One
+`ManifestEntry` per factory with `name`, `specPath`, and `exportName`. Starts
+empty — `ddd-spec` adds entries when it creates composed specs.
 
 See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 6 — Create `scripts/generate-specs.ts`
+## Step 5 — Create `scripts/generate-specs.ts`
 
-Entry point that reads the manifest, flattens each spec, and writes `.spec.md` files.
-Only regenerates content between `<!-- BEGIN:GENERATED -->` / `<!-- END:GENERATED -->`
-markers. Prose sections (§1-§3) written by `ddd-documentation` are preserved.
+Entry point that reads the manifest, flattens each spec, and writes `.spec.md` files
+next to each `.spec.ts`. These are **fully generated** structural docs — pipeline
+tables and decision tables. No prose sections, no manual editing. The file is
+overwritten on every run.
+
+Business-friendly prose documentation lives separately in `/docs/` and is managed
+by the `ddd-documentation` skill.
 
 **Manifest validation:** Before doing any work, the script validates every manifest
 entry — checks the file exists and the named export is present. If any entry is
 stale (renamed or deleted spec file), the script fails with a clear error pointing
 to the broken entry. Fix the manifest and re-run.
 
-**Staleness detection:** When generated content actually changes, the script injects
-a `<!-- ⚠ STALE: ... -->` marker above each prose section, signaling that the
-business scenarios may need updating. `ddd-documentation` removes these markers
-when it updates prose.
-
 See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 7 — Create `scripts/tsconfig.json`
+## Step 6 — Create `scripts/tsconfig.json`
 
 Scripts live outside `src/` and need their own tsconfig. Targets ES2022, ESNext modules,
 bundler resolution.
@@ -125,16 +108,23 @@ See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 8 — Create `docs/specs.ts`
+## Step 7 — Create `docs/` directory structure
 
-Documentation registry listing all generated `.spec.md` files. Updated automatically
-by `npm run gen:specs`. Developers import this for a single access point to all spec docs.
+Create the `/docs` directory for Jekyll Just the Docs site. The `ddd-documentation`
+skill populates this with business-friendly prose docs, but the structure is
+established here:
+
+```
+docs/
+  _config.yml              <- Jekyll Just the Docs configuration
+  index.md                 <- Domain home page
+```
 
 See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 9 — Update `package.json`
+## Step 8 — Update `package.json`
 
 Add the gen:specs script and tsx dependency:
 
@@ -153,7 +143,7 @@ Only add what's missing. Do not overwrite existing scripts or dependencies.
 
 ---
 
-## Step 10 — Create `.claude/hooks.json`
+## Step 9 — Create `.claude/hooks.json`
 
 Auto-regenerate `.spec.md` files when any `.spec.ts` file is written or edited.
 
@@ -175,13 +165,13 @@ without removing existing hooks.
 
 ---
 
-## Step 11 — Install dependencies
+## Step 10 — Install dependencies
 
 Run `npm install` to install tsx.
 
 ---
 
-## Step 12 — Verify
+## Step 11 — Verify
 
 Run `npm run gen:specs` to confirm the pipeline works. With an empty manifest it
 should report "spec-manifest.ts is empty — no specs to generate." and exit cleanly.
@@ -195,17 +185,16 @@ After running, report:
 ```
 ddd-init complete:
 
-  shared/spec.ts            ✓ created
-  shared/testing.ts         ✓ created
-  scripts/spec-tools.ts     ✓ created
-  scripts/spec-manifest.ts  ✓ created
-  scripts/generate-specs.ts ✓ created
-  scripts/tsconfig.json     ✓ created
-  docs/specs.ts             ✓ created
-  package.json              ✓ updated (gen:specs script, tsx devDep)
-  .claude/hooks.json        ✓ created
-  npm install               ✓ ran
-  npm run gen:specs          ✓ verified
+  shared/spec-framework.ts  created
+  scripts/spec-tools.ts     created
+  scripts/spec-manifest.ts  created
+  scripts/generate-specs.ts created
+  scripts/tsconfig.json     created
+  docs/specs.ts             created
+  package.json              updated (gen:specs script, tsx devDep)
+  .claude/hooks.json        created
+  npm install               ran
+  npm run gen:specs          verified
 
 All infrastructure is ready. Use ddd-data-modelling or ddd-spec to start
 building domain functions.
@@ -222,7 +211,7 @@ building domain functions.
 - **All shared file content is defined here.** Other skills reference these files
   but do not create or modify them.
 - **The manifest starts empty.** The `ddd-spec` skill adds entries when it creates
-  factory specs. This skill only creates the empty manifest file.
+  composed specs. This skill only creates the empty manifest file.
 - **Report every action.** The user should see exactly what was created, skipped,
   or updated.
 

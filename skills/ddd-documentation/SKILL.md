@@ -1,250 +1,318 @@
 ---
 name: ddd-documentation
 description: >
-  Generates business-friendly .spec.md documentation from flat decision tables
-  produced by the CLI script. Reads the flattened table object and writes verbose,
-  polished markdown with numbered sections, ✓/✗/— symbols, business scenarios in
-  plain English, and pipeline tables. The AI elaborates on structure — it does not
-  design or invent. Use anytime after the CLI has produced flat tables.
+  Generates business-friendly documentation in /docs/ with Jekyll Just the Docs
+  front matter. Reads the Spec<Fn> declaration and writes polished markdown with
+  overview, interface, business scenarios, pipeline, and decision tables. Navigation
+  mirrors domain structure: domain home -> aggregate sections -> operation pages.
+  The AI elaborates on structure — it does not design or invent. Use anytime after
+  specs are defined.
 ---
 
-You are a documentation generator. Your job is to take a flat decision table object
-(produced by the CLI from the spec tree) and write a polished, business-friendly
-`.spec.md` file.
+You are a documentation generator. Your job is to read a `.spec.ts` file and write
+a polished, business-friendly documentation page in the `/docs` directory.
 
 You do not design — the spec is already complete. You elaborate. You take the
-precise, machine-generated table structure and make it readable by PMs, domain
-experts, and developers who prefer prose over code.
+precise structure from the `Spec<Fn>` declaration and make it readable by PMs,
+domain experts, and developers who prefer prose over code.
+
+The output is a Jekyll Just the Docs site with navigation that mirrors the domain
+structure.
 
 ---
 
 ## Your disposition
 
-- **Elaborate, don't design.** The flat table has the exact structure. You add
+- **Elaborate, don't design.** The spec has the exact structure. You add
   context, descriptions, and business language around it.
 - **Business-friendly language.** "Cart contains 4 sneakers at $100 each" not
   "ActiveCart with items array containing CartItem".
-- **Follow the polished format exactly.** Numbered sections, ✓/✗/— symbols,
-  centered columns, abbreviated headers.
-- **One operation at a time.** Generate the full `.spec.md` for one operation
+- **Follow the format exactly.** Jekyll front matter, numbered sections,
+  pass/fail symbols, centered columns.
+- **One operation at a time.** Generate the full doc page for one operation
   before moving to the next.
 
 ---
 
-## How `.spec.md` files work — two owners, one file
+## Navigation structure
 
-A `.spec.md` has two kinds of sections with different owners:
-
-| Sections | Owner | Updated by |
-|---|---|---|
-| §1 Overview, §2 Interface, §3 Scenarios | **AI** (this skill) | Running ddd-documentation |
-| §4 Pipeline, §5 Decision Tables | **CLI** | `npm run gen:specs` (auto-runs on `.spec.ts` save via hook) |
-
-**The CLI never touches prose. The AI never touches generated tables.**
-
-When a `.spec.ts` changes (e.g. a new constraint is added), the hook runs
-`npm run gen:specs` which updates §4-§5 between `<!-- BEGIN:GENERATED -->`
-/ `<!-- END:GENERATED -->` markers. If the generated content actually changed,
-the CLI injects a staleness marker above each prose section:
+The `/docs` directory mirrors the domain:
 
 ```
-<!-- ⚠ STALE: Generated sections (§4-§5) changed — review this prose section. Run ddd-documentation to update. -->
+docs/
+  _config.yml                          <- Jekyll Just the Docs config (created by ddd-init)
+  index.md                             <- Domain home (nav_order: 1)
+  cart/
+    index.md                           <- Aggregate overview (has_children: true)
+    subtract-quantity.md               <- Operation page (parent: Cart)
+    remove-item.md
+    add-item.md
+  order/
+    index.md                           <- Aggregate overview (has_children: true)
+    confirm-order.md
+    cancel-order.md
 ```
 
-This marker is your signal: the decision tables have new rows, but the business
-scenarios in §3 don't describe them yet. **When you update prose sections,
-remove the stale markers.**
+### Front matter patterns
 
-## Your job
+**Aggregate index:**
+```yaml
+---
+title: Cart
+nav_order: 2
+has_children: true
+---
+```
 
-**Fill in the business-facing prose sections (§1-§3) only.**
-Do not regenerate §4-§5 — the CLI owns those. Read the generated structural
-sections as input for your prose.
+**Operation page:**
+```yaml
+---
+title: Subtract Quantity
+parent: Cart
+nav_order: 1
+---
+```
 
-If the `.spec.md` already exists with generated sections, preserve the markers
-and only write into the prose sections above them. Always remove any
-`<!-- ⚠ STALE: ... -->` markers from sections you update.
-
-If no `.spec.md` exists yet (CLI hasn't run), you can generate the full file
-from the `.spec.ts` directly — but note the user should run `ddd-init` to set
-up automation for ongoing sync.
+The `nav_order` determines sidebar ordering. Use alphabetical or logical ordering
+within each aggregate.
 
 ---
 
 ## Input
 
 Ask the user to provide:
-1. The `.spec.md` file (if it exists — has generated structural sections)
-2. The `.spec.ts` file (for success types, descriptions)
-3. The `types.ts` file (for type names)
+1. The `.spec.ts` file (for SpecFn type, failure groups, success groups, steps)
+2. The `types.ts` file (for type names and domain context)
+3. Which aggregate this operation belongs to (for navigation placement)
 
-Or, if no `.spec.md` exists yet:
-1. The `.spec.ts` file directly — you can read the spec tree and mentally
-   flatten it (though the CLI is preferred for consistency).
+If the aggregate directory doesn't exist in `/docs`, create it with an `index.md`.
 
 ---
 
-## Output format — the polished .spec.md
+## Deriving documentation from the spec
 
-Follow this numbered section layout exactly. This is the reference format.
+The v4 `Spec<Fn>` gives you everything:
+
+- **`SpecFn` type declaration** — input type, output type, failure union, success types
+- **`steps` array** (if present) — pipeline order, step/dep/strategy classification, descriptions
+- **`shouldFailWith`** — failure groups with descriptions and examples
+- **`shouldSucceedWith`** — success groups with descriptions and examples
+- **`shouldAssert`** — named assertions per success type
+
+Inherited failures (from step specs via `inheritFromSteps`) appear in the runner
+as `test.skip` with `coveredBy` — mention these in the failure cases section as
+"validated by [step name]".
+
+---
+
+## Output format — the operation page
+
+Every operation page follows this structure. Each section is mandatory.
 
 ```md
-# operation-name
+---
+title: Subtract Quantity
+parent: Cart
+nav_order: 3
+---
 
-> **Operation Specification** · Domain Name · v1.0
+# Subtract Quantity
+
+> Reduces the quantity of an item in an active cart. If the quantity reaches zero,
+> the item is removed. If no items remain, the cart transitions to empty.
 
 ---
 
-## 1. Overview
+## Overview
 
-Brief description of what the operation does. Then a summary table:
+Brief paragraph describing what the operation does in business terms.
 
 | Outcome | When | Result |
 |---|---|---|
-| ✅ **Success type 1** | condition in plain English | what happens |
-| ✅ **Success type 2** | condition in plain English | what happens |
+| **quantity-reduced** | Subtracting less than the current quantity | Item quantity decreases, cart total recalculated |
+| **item-removed** | Subtracting the exact remaining quantity | Item removed from cart, cart total recalculated |
+| **cart-emptied** | Removing the last item in the cart | Cart transitions to empty state |
 
-Final paragraph about failure behavior:
-> "The operation is protected by input validation and domain state checks.
-> No state is changed in any failure case."
+> The operation is protected by input validation and domain state checks.
+> No state is changed in any failure case.
 
 ---
 
-## 2. Operation Interface
+## Interface
 
 | | |
 |---|---|
-| **Name** | `operation-name` |
-| **Input** | `param1`, `param2` |
-| **Output** | `OutputType` |
-| **Description** | Business-language description. |
+| **Name** | `subtractQuantity` |
+| **Input** | `cartId`, `productId`, `quantity` |
+| **Output** | `ActiveCart` or `EmptyCart` |
+| **Sync/Async** | Async (shell factory) |
 
 ---
 
-## 3. Business Scenarios
+## Business Scenarios
 
-### 3.1 Happy Paths
+### Happy Paths
 
 | Scenario | Given | Then |
 |---|---|---|
-| **Success type name** | Concrete business state. | Concrete business outcome. |
+| **Reduce quantity** | Cart has 4 sneakers at $100 each. Customer subtracts 2. | Cart now has 2 sneakers. Total is $200. |
+| **Remove item** | Cart has 1 book at $15. Customer subtracts 1. | Book removed. Other items unchanged. |
+| **Empty cart** | Cart has only 1 book. Customer subtracts 1. | Cart transitions to empty. |
 
-### 3.2 Failure Cases
+### Failure Cases
 
 No state is modified in any of the following cases.
 
-| Scenario | Given | Outcome |
+| Failure | When | Source |
 |---|---|---|
-| **Failure name** | What the user tries. | Rejected — `failure_literal` |
+| `not_a_string` | Cart ID is not a string (e.g. a number) | `parseCartId` step |
+| `not_a_uuid` | Cart ID is not a valid UUID format | `parseCartId` step |
+| `cart_empty` | Cart has no items (empty state) | `checkActive` step |
+| `cart_confirmed` | Cart has already been confirmed | `checkActive` step |
+| `cart_not_found` | No cart exists with the given ID | `findCart` dep |
+| `product_not_in_cart` | The specified product is not in the cart | Own validation |
+| `insufficient_quantity` | Subtracting more than available | Own validation |
+
+### Assertions
+
+When quantity is reduced:
+- The product is still present in the cart with reduced quantity
+- Cart total reflects the new quantity
+
+When an item is removed:
+- The product no longer appears in cart items
+- Other items remain unchanged
+
+When the cart is emptied:
+- Cart status is `empty`
+- No items remain
 
 ---
 
-## 4. Shell Pipeline
+## Pipeline
 
-> The shell orchestrates input validation, data fetching, core domain logic,
-> and persistence. Steps execute in sequence — the pipeline short-circuits
-> on the first failure.
+| # | Name | Type | Description | Failure Codes |
+|---|---|---|---|---|
+| 1 | `parseCartId` | `STEP` | Validate and parse the raw cart id | `not_a_string`, `empty`, `not_a_uuid` |
+| 2 | `parseProductId` | `STEP` | Validate the product identifier | `not_a_string`, `not_a_uuid` |
+| 3 | `parseQuantity` | `STEP` | Validate the quantity value | `not_a_number`, `not_positive` |
+| 4 | `findCart` | `DEP` | Fetch cart from persistence | -- |
+| 5 | `core` | `STEP` | Core domain logic | `cart_empty`, `cart_confirmed`, ... |
+| 6 | `saveCart` | `DEP` | Persist the updated cart | -- |
 
 > **STEP** — pure, synchronous domain function. No I/O, fully testable in isolation.
 > **DEP** — async infrastructure dependency (persistence or external service).
 
-| # | Name | Type | Description | Failure Codes |
-|---|---|---|---|---|
-| 1 | `parseCartId` | `STEP` | Validate the cart identifier format | `not_a_string`, `not_a_uuid` |
-| 2 | `findCartById` | `DEP` | Fetch the cart from persistence by ID | `find_failed` |
-
 ---
 
-## 5. Core Logic
+## Decision Table
 
-> The core is a pure, synchronous function — no I/O, no side effects.
+| Scenario | `parseCartId` :not_a_string | `checkActive` :cart_empty | ... | Outcome |
+|---|:---:|:---:|:---:|---|
+| OK quantity-reduced | pass | pass | pass | `ActiveCart` — qty reduced |
+| FAIL not_a_string | FAIL | -- | -- | Fails: `not_a_string` |
+| FAIL cart_empty | pass | FAIL | -- | Fails: `cart_empty` |
 
-| # | Step | Description | Failure Codes |
-|---|---|---|---|
-| 1 | `checkActive` | Ensure the cart is in active state | `cart_empty`, `cart_confirmed`, `cart_cancelled` |
-| 2 | `subtractQuantity` | Reduce item quantity by requested amount | — |
-
----
-
-## 6. Decision Tables
-
-> Decision tables show which conditions must hold (✓) or fail (✗) to produce
-> each outcome. A dash (—) means the condition is not evaluated — the pipeline
-> has already terminated at an earlier step.
-
-### 6.1 Core
-
-| Scenario | `checkActive` `:cart_empty` | `checkProduct` `:not_in_cart` | Outcome |
-|---|:---:|:---:|---|
-| ✅ qty reduced | ✓ | ✓ | `ActiveCart` — qty reduced |
-| ❌ cart empty | ✗ | — | Fails: `cart_empty` |
-| ❌ not in cart | ✓ | ✗ | Fails: `not_in_cart` |
-
-### 6.2 Shell
-
-> Column headers are abbreviated — see §4 for full step names.
-
-[Full shell decision table from flat table]
+> Decision tables show which conditions must pass or fail to produce each outcome.
+> A dash (--) means the condition is not evaluated — the pipeline already terminated.
 ```
 
 ---
 
-## Deriving sections from the flat table
+## Deriving each section
 
-### Section 6 (Decision Tables) — direct translation
+### Overview — from `shouldSucceedWith`
 
-The flat table gives you columns and successes. Translate directly:
-- Each `success` → a ✅ row with all ✓
-- Each `column` at index i → a ❌ row with ✓ before, ✗ at i, — after
-- Column headers: `\`step\` :failure` or abbreviated for wide tables
+Each success type becomes a row in the summary table. Describe conditions and
+outcomes in business language. Add the boilerplate about failure safety.
 
-### Section 5 (Core Logic) — derived from core flat table
+### Interface — from `SpecFn` type params
 
-Group columns by step name. Each unique step becomes a row.
-Failure codes are the column failures for that step.
-Steps with no failures (pure transforms) get `—`.
+Read input type, output type, and whether it's sync (`Fn['signature']`) or
+async (`Fn['asyncSignature']`).
 
-### Section 4 (Shell Pipeline) — derived from shell flat table
+### Business Scenarios — from examples and failure groups
 
-Same grouping. Classify each step as STEP or DEP based on the `type` field
-in the flat constraints.
+**Happy paths:** Read `shouldSucceedWith` examples. Translate `whenInput` and `then`
+into business language with concrete values.
 
-### Section 3 (Business Scenarios) — elaboration
+**Failure cases:** Read `shouldFailWith`. For each group:
+- If it has examples: describe the scenario from the example's `whenInput`
+- If it has `coveredBy`: note the source step
+- List the `Source` column as step name, dep name, or "Own validation"
 
-Take success types and top-level failures. Write in plain business English.
-Use concrete values: "Cart contains 4 sneakers at $100 each (total $400).
-Customer subtracts 2."
+**Assertions:** Read `shouldAssert`. Translate each assertion's `description` into
+plain English grouped by success type.
 
-### Sections 1-2 (Overview, Interface) — elaboration
+### Pipeline — from `steps` array
 
-Summarize from the spec's types and success types. The overview table
-mirrors the success types. The interface table comes from the spec's
-input/output types.
+Direct translation of the `steps` array. Read failure codes from step specs
+(`step.spec.shouldFailWith` keys). Steps without specs get `--`.
+
+### Decision Table — from flattened failures + successes
+
+Each success type gets a passing row (all pass). Each failure gets a row showing
+where the pipeline short-circuits.
 
 ---
 
 ## Abbreviation rules for wide tables
 
 When a decision table has many columns, abbreviate:
-- `parseCartId :not_a_string` → `cId str`
-- `parseCartId :not_a_uuid` → `cId uuid`
-- `parseQuantity :not_a_number` → `qty num`
-- `checkActive :cart_empty` → `core :empty`
+- `parseCartId :not_a_string` -> `cId str`
+- `parseQuantity :not_a_number` -> `qty num`
+- `checkActive :cart_empty` -> `active :empty`
 
-Add a note: "Column headers are abbreviated — see §4 for full step names."
+Add a note: "Column headers are abbreviated — see Pipeline for full step names."
+
+---
+
+## Creating aggregate pages
+
+When documenting an operation for an aggregate that doesn't have a `/docs` page yet,
+create the aggregate `index.md` first:
+
+```md
+---
+title: Cart
+nav_order: 2
+has_children: true
+---
+
+# Cart
+
+The Cart aggregate manages shopping cart lifecycle — from empty through active
+(with items) to confirmed or cancelled.
+
+## Operations
+
+| Operation | Description |
+|---|---|
+| [Subtract Quantity](subtract-quantity) | Reduce item quantity, remove item, or empty cart |
+| [Add Item](add-item) | Add a product to the cart |
+| [Remove Item](remove-item) | Remove a product from the cart entirely |
+```
+
+Update the operations table each time you add a new operation page.
 
 ---
 
 ## Hard rules
 
-- **Never invent scenarios not in the spec.** Every row comes from the flat table.
+- **Never invent scenarios not in the spec.** Every row comes from the spec declaration.
 - **Never modify the spec.** If something is missing, go back to ddd-spec.
-- **Use ✓/✗/— symbols.** Center-align condition columns with `:---:`.
-- **Business scenarios are in plain English.** No code in §3.
-- **Assertion expressions live in code, not in the spec.md.**
+- **Business scenarios are in plain English.** No code in the scenarios section.
+  Failure literal names appear in the Failure Cases table but not in happy path prose.
+- **Assertion expressions live in code, not in docs.** Describe them in English.
 - **Abbreviate column headers** in wide tables. Reference the pipeline section.
-- **Numbered sections.** Always §1-§6. Simpler functions skip §4/§5.
-- **One operation at a time.** Complete the full .spec.md before moving on.
+- **Every operation page has all sections.** Overview, Interface, Scenarios, Pipeline,
+  Decision Table. Atomic functions without steps skip Pipeline.
+- **One operation at a time.** Complete the full page before moving on.
+- **Front matter is mandatory.** Every `.md` in `/docs` must have Jekyll front matter
+  with `title`, `parent` (for operation pages), and `nav_order`.
+- **Update the aggregate index** when adding a new operation page.
+- **Docs live in `/docs` only.** Never write prose into `.spec.md` files next to code —
+  those are fully generated by the CLI.
 
 ## Additional resources
 
