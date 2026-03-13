@@ -29,7 +29,6 @@ Check which of these files already exist:
 ```
 src/shared/spec-framework.ts
 scripts/spec-tools.ts
-scripts/spec-manifest.ts
 scripts/generate-specs.ts
 scripts/tsconfig.json
 docs/specs.ts
@@ -47,8 +46,8 @@ Report status before proceeding:
 ## Step 2 — Create `shared/spec-framework.ts`
 
 The single infrastructure file. Contains all types (`Result`, `SpecFn`, `Spec`,
-`StepInfo`, example types, assertion types) AND the test runner (`testSpec`) AND
-the `inheritFromSteps` utility.
+`StepInfo`, `CanonicalFn`, example types, assertion types) AND the runners
+(`testSpec`, `execCanonical`) AND utilities (`inheritFromSteps`, `asStepSpec`).
 
 This replaces v3's two files (`spec.ts` + `testing.ts`) with one unified module.
 
@@ -70,36 +69,22 @@ See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 4 — Create `scripts/spec-manifest.ts`
+## Step 4 — Create `scripts/generate-specs.ts`
 
-The manifest is the single registry of all composed specs (factories). One
-`ManifestEntry` per factory with `name`, `specPath`, and `exportName`. Starts
-empty — `ddd-spec` adds entries when it creates composed specs.
-
-See [examples.md](examples.md) for the complete file contents.
-
----
-
-## Step 5 — Create `scripts/generate-specs.ts`
-
-Entry point that reads the manifest, flattens each spec, and writes `.spec.md` files
-next to each `.spec.ts`. These are **fully generated** structural docs — pipeline
-tables and decision tables. No prose sections, no manual editing. The file is
-overwritten on every run.
+Auto-discovers specs with `document: true` via glob — no manual manifest needed.
+Globs for `src/**/*.spec.ts`, imports each file, and writes `.spec.md` files
+next to any spec that has `document: true`. These are **fully generated** structural
+docs — pipeline tables and decision tables. No prose sections, no manual editing.
+The file is overwritten on every run.
 
 Business-friendly prose documentation lives separately in `/docs/` and is managed
 by the `ddd-documentation` skill.
 
-**Manifest validation:** Before doing any work, the script validates every manifest
-entry — checks the file exists and the named export is present. If any entry is
-stale (renamed or deleted spec file), the script fails with a clear error pointing
-to the broken entry. Fix the manifest and re-run.
-
 See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 6 — Create `scripts/tsconfig.json`
+## Step 5 — Create `scripts/tsconfig.json`
 
 Scripts live outside `src/` and need their own tsconfig. Targets ES2022, ESNext modules,
 bundler resolution.
@@ -108,7 +93,7 @@ See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 7 — Create `docs/` directory structure
+## Step 6 — Create `docs/` directory structure
 
 Create the `/docs` directory for Jekyll Just the Docs site. The `ddd-documentation`
 skill populates this with business-friendly prose docs, but the structure is
@@ -124,9 +109,9 @@ See [examples.md](examples.md) for the complete file contents.
 
 ---
 
-## Step 8 — Update `package.json`
+## Step 7 — Update `package.json`
 
-Add the gen:specs script and tsx dependency:
+Add the gen:specs script and glob + tsx dependencies:
 
 ```json
 {
@@ -134,6 +119,7 @@ Add the gen:specs script and tsx dependency:
     "gen:specs": "tsx scripts/generate-specs.ts"
   },
   "devDependencies": {
+    "glob": "^11.0.0",
     "tsx": "^4.0.0"
   }
 }
@@ -143,7 +129,7 @@ Only add what's missing. Do not overwrite existing scripts or dependencies.
 
 ---
 
-## Step 9 — Create `.claude/hooks.json`
+## Step 8 — Create `.claude/hooks.json`
 
 Auto-regenerate `.spec.md` files when any `.spec.ts` file is written or edited.
 
@@ -165,16 +151,17 @@ without removing existing hooks.
 
 ---
 
-## Step 10 — Install dependencies
+## Step 9 — Install dependencies
 
-Run `npm install` to install tsx.
+Run `npm install` to install glob and tsx.
 
 ---
 
-## Step 11 — Verify
+## Step 10 — Verify
 
-Run `npm run gen:specs` to confirm the pipeline works. With an empty manifest it
-should report "spec-manifest.ts is empty — no specs to generate." and exit cleanly.
+Run `npm run gen:specs` to confirm the pipeline works. With no `document: true`
+specs it should report "No specs with document: true found — nothing to generate."
+and exit cleanly.
 
 ---
 
@@ -187,11 +174,11 @@ ddd-init complete:
 
   shared/spec-framework.ts  created
   scripts/spec-tools.ts     created
-  scripts/spec-manifest.ts  created
   scripts/generate-specs.ts created
   scripts/tsconfig.json     created
-  docs/specs.ts             created
-  package.json              updated (gen:specs script, tsx devDep)
+  docs/_config.yml          created
+  docs/index.md             created
+  package.json              updated (gen:specs script, glob + tsx devDeps)
   .claude/hooks.json        created
   npm install               ran
   npm run gen:specs          verified
@@ -210,8 +197,8 @@ building domain functions.
 - **Merge, don't replace** existing `package.json` and `hooks.json`.
 - **All shared file content is defined here.** Other skills reference these files
   but do not create or modify them.
-- **The manifest starts empty.** The `ddd-spec` skill adds entries when it creates
-  composed specs. This skill only creates the empty manifest file.
+- **No manifest.** Specs opt in to `.spec.md` generation via `document: true`.
+  The `generate-specs` script auto-discovers them via glob.
 - **Report every action.** The user should see exactly what was created, skipped,
   or updated.
 

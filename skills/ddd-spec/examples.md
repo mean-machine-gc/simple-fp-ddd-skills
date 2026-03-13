@@ -198,6 +198,7 @@ Only overrides and own failures are declared — inherited failures resolve at r
 ```ts
 // remove-item.spec.ts
 import type { SpecFn, Spec, StepInfo } from '../../shared/spec-framework'
+import { asStepSpec } from '../../shared/spec-framework'
 import { parseCartIdSpec } from '../shared/parse/parse-cart-id.spec'
 import { checkActiveSpec } from '../shared/steps/check-active.spec'
 import type { ActiveCart } from '../types'
@@ -219,9 +220,9 @@ export type RemoveItemFn = SpecFn<
 // -- Algorithm ----------------------------------------------------------------
 
 const steps: StepInfo[] = [
-    { name: 'parseCartId', type: 'step', description: 'Validate and parse the raw cart id', spec: parseCartIdSpec },
+    { name: 'parseCartId', type: 'step', description: 'Validate and parse the raw cart id', spec: asStepSpec(parseCartIdSpec) },
     { name: 'findCart',    type: 'dep',  description: 'Fetch cart from persistence by id' },
-    { name: 'checkActive', type: 'step', description: 'Verify cart is in active state',    spec: checkActiveSpec },
+    { name: 'checkActive', type: 'step', description: 'Verify cart is in active state',    spec: asStepSpec(checkActiveSpec) },
     { name: 'removeItem',  type: 'step', description: 'Remove the product from cart items' },
     { name: 'saveCart',    type: 'dep',  description: 'Persist the updated cart' },
 ]
@@ -233,6 +234,7 @@ const CART_ID = '550e8400-e29b-41d4-a716-446655440000'
 // -- Spec — behavioral contract + algorithm -----------------------------------
 
 export const removeItemSpec: Spec<RemoveItemFn> = {
+    document: true,
     steps,
 
     shouldFailWith: {
@@ -317,6 +319,7 @@ condition, determined by `evaluateSuccessType` in the implementation.
 ```ts
 // subtract-quantity/core/subtract-quantity.spec.ts
 import type { SpecFn, Spec, StepInfo } from '../../../shared/spec-framework'
+import { asStepSpec } from '../../../shared/spec-framework'
 import { checkActiveSpec } from '../../shared/steps/check-active.spec'
 import type { ActiveCart, EmptyCart, CartItem, ProductId, Quantity } from '../../types'
 
@@ -336,7 +339,7 @@ export type SubtractQuantityCoreFn = SpecFn<
 // -- Algorithm ----------------------------------------------------------------
 
 const steps: StepInfo[] = [
-    { name: 'checkActive',         type: 'step', description: 'Verify cart is active',             spec: checkActiveSpec },
+    { name: 'checkActive',         type: 'step', description: 'Verify cart is active',             spec: asStepSpec(checkActiveSpec) },
     { name: 'checkProductInCart',   type: 'step', description: 'Find the target product' },
     { name: 'subtractQty',         type: 'step', description: 'Reduce quantity by requested amount' },
     { name: 'filterZeroItems',     type: 'step', description: 'Remove items with zero quantity' },
@@ -371,6 +374,7 @@ const expectedEmpty: CoreOutput = { status: 'empty', id: 'cart-1' }
 // -- Spec ---------------------------------------------------------------------
 
 export const subtractQuantityCoreSpec: Spec<SubtractQuantityCoreFn> = {
+    document: true,
     steps,
 
     shouldFailWith: {
@@ -766,6 +770,7 @@ const cart: ActiveCart = {
 // shouldFailWith is empty — all handler failures auto-inherited via inheritFromSteps.
 
 export const applyDiscountSpec: Spec<ApplyDiscountFn> = {
+    document: true,
     steps,
 
     shouldFailWith: {

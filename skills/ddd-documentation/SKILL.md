@@ -31,6 +31,9 @@ structure.
   pass/fail symbols, centered columns.
 - **One operation at a time.** Generate the full doc page for one operation
   before moving to the next.
+- **Never duplicate structural tables.** Pipeline tables and decision tables
+  belong in `.spec.md` (auto-generated). The `/docs/` pages reference them
+  but never rebuild them. `/docs/` owns business prose only.
 
 ---
 
@@ -41,7 +44,7 @@ The `/docs` directory mirrors the domain:
 ```
 docs/
   _config.yml                          <- Jekyll Just the Docs config (created by ddd-init)
-  index.md                             <- Domain home (nav_order: 1)
+  index.md                             <- Domain home (nav_order: 1, mermaid: true)
   cart/
     index.md                           <- Aggregate overview (has_children: true)
     subtract-quantity.md               <- Operation page (parent: Cart)
@@ -54,6 +57,16 @@ docs/
 ```
 
 ### Front matter patterns
+
+**Domain home:**
+```yaml
+---
+layout: default
+title: Home
+nav_order: 1
+mermaid: true
+---
+```
 
 **Aggregate index:**
 ```yaml
@@ -102,6 +115,114 @@ The v4 `Spec<Fn>` gives you everything:
 Inherited failures (from step specs via `inheritFromSteps`) appear in the runner
 as `test.skip` with `coveredBy` — mention these in the failure cases section as
 "validated by [step name]".
+
+---
+
+## Output format — the domain home page
+
+The domain home page (`docs/index.md`) is the landing page for the entire domain layer.
+It provides a high-level overview of all aggregates, their lifecycle states, operations,
+and how they interact. **Create or update this page whenever adding a new aggregate or
+operation.**
+
+The home page follows this structure:
+
+1. **Title and tagline** — one-paragraph description of what the domain layer does
+2. **How it works** — numbered steps describing the main flow in plain English
+3. **Aggregates** — one section per aggregate with:
+   - Brief description of what the aggregate owns
+   - State table showing lifecycle states
+   - Constraints (if any uniqueness or business rules apply at aggregate level)
+   - Operations list with links to operation pages
+4. **Flow diagram** — a Mermaid flowchart showing how aggregates interact
+
+### Example — Shopping Cart domain
+
+````md
+---
+layout: default
+title: Home
+nav_order: 1
+mermaid: true
+---
+
+# Shopping Cart
+
+> A shopping cart domain layer that manages the full cart lifecycle — from creation
+> through item management to confirmation or cancellation — with validated quantities,
+> prices, and running totals.
+
+---
+
+## How it works
+
+1. A customer **creates** an empty cart
+2. Items are **added** to the cart with product details and prices, transitioning
+   it to active
+3. Item quantities can be **added to**, **subtracted**, or items **removed** entirely
+4. When items reach zero quantity, the item is removed; when all items are gone,
+   the cart transitions back to empty
+5. An active cart can be **confirmed** (freezing its contents) or left for future changes
+
+---
+
+## Aggregates
+
+### [Cart](cart/)
+
+Manages the shopping cart lifecycle — from empty through active (with items)
+to confirmed or cancelled.
+
+| State | Description |
+|---|---|
+| **Empty** | Newly created, no items |
+| **Active** | Has at least one item with a running total |
+| **Confirmed** | Contents frozen, ready for checkout |
+| **Cancelled** | Abandoned, no longer active |
+
+**Operations:** [Create Cart](cart/create-cart) | [Add Item](cart/add-item-to-cart) | [Add Quantity](cart/add-quantity) | [Subtract Quantity](cart/subtract-quantity) | [Remove Item](cart/remove-item-from-cart) | [Confirm Cart](cart/confirm-cart)
+
+---
+
+## Cart lifecycle
+
+```mermaid
+flowchart LR
+    Create([Create]) --> Empty
+    Empty -->|Add Item| Active
+    Active -->|Add Item| Active
+    Active -->|Add / Subtract Quantity| Active
+    Active -->|Remove last item| Empty
+    Active -->|Confirm| Confirmed
+    Active -->|Cancel| Cancelled
+
+    style Empty fill:#f9f,stroke:#333
+    style Active fill:#9f9,stroke:#333
+    style Confirmed fill:#99f,stroke:#333
+    style Cancelled fill:#f99,stroke:#333
+```
+
+Each arrow is a domain operation. All operations validate inputs and enforce
+state preconditions — no state is changed in any failure case.
+````
+
+### Deriving the home page
+
+- **Tagline** — read `types.ts` to understand what the domain is about. One paragraph,
+  business language.
+- **How it works** — describe the main flow through the domain in numbered steps.
+  Think about the happy path from start to finish.
+- **Aggregates** — for each aggregate:
+  - Read the discriminated union in `types.ts` to identify lifecycle states
+  - Read the operation folders to list all operations
+  - Link to aggregate index page and operation pages
+- **Flow diagram** — a Mermaid `flowchart LR` showing state transitions. Each arrow
+  label is an operation name. Style each state node with a distinct color.
+
+**When to create vs update:** Create the home page when documenting the first
+operation in a new domain. Update it whenever a new aggregate or operation is added —
+add the operation to the relevant aggregate's operations list, and update the flow
+diagram if new transitions are introduced.
 
 ---
 
@@ -189,32 +310,13 @@ When the cart is emptied:
 
 ---
 
-## Pipeline
+## Pipeline & Decision Table
 
-| # | Name | Type | Description | Failure Codes |
-|---|---|---|---|---|
-| 1 | `parseCartId` | `STEP` | Validate and parse the raw cart id | `not_a_string`, `empty`, `not_a_uuid` |
-| 2 | `parseProductId` | `STEP` | Validate the product identifier | `not_a_string`, `not_a_uuid` |
-| 3 | `parseQuantity` | `STEP` | Validate the quantity value | `not_a_number`, `not_positive` |
-| 4 | `findCart` | `DEP` | Fetch cart from persistence | -- |
-| 5 | `core` | `STEP` | Core domain logic | `cart_empty`, `cart_confirmed`, ... |
-| 6 | `saveCart` | `DEP` | Persist the updated cart | -- |
+For the full pipeline table and decision table, see the auto-generated
+[subtract-quantity.spec.md](../../src/cart/subtract-quantity/subtract-quantity.spec.md).
 
-> **STEP** — pure, synchronous domain function. No I/O, fully testable in isolation.
-> **DEP** — async infrastructure dependency (persistence or external service).
-
----
-
-## Decision Table
-
-| Scenario | `parseCartId` :not_a_string | `checkActive` :cart_empty | ... | Outcome |
-|---|:---:|:---:|:---:|---|
-| OK quantity-reduced | pass | pass | pass | `ActiveCart` — qty reduced |
-| FAIL not_a_string | FAIL | -- | -- | Fails: `not_a_string` |
-| FAIL cart_empty | pass | FAIL | -- | Fails: `cart_empty` |
-
-> Decision tables show which conditions must pass or fail to produce each outcome.
-> A dash (--) means the condition is not evaluated — the pipeline already terminated.
+> **STEP** — domain function (sync or async). Fully testable in isolation with `testSpec`.
+> **DEP** — infrastructure capability (persistence, external service). Injected by the app layer.
 ```
 
 ---
@@ -244,15 +346,13 @@ into business language with concrete values.
 **Assertions:** Read `shouldAssert`. Translate each assertion's `description` into
 plain English grouped by success type.
 
-### Pipeline — from `steps` array
+### Pipeline & Decision Table — from `.spec.md`
 
-Direct translation of the `steps` array. Read failure codes from step specs
-(`step.spec.shouldFailWith` keys). Steps without specs get `--`.
+**Do not rebuild these.** The pipeline table and decision table are auto-generated
+in `.spec.md` by `npm run gen:specs`. The docs page links to the `.spec.md` file
+instead of duplicating the tables. This prevents drift between the two artifacts.
 
-### Decision Table — from flattened failures + successes
-
-Each success type gets a passing row (all pass). Each failure gets a row showing
-where the pipeline short-circuits.
+If the spec has `document: true`, the `.spec.md` will exist alongside the `.spec.ts`.
 
 ---
 
@@ -318,7 +418,8 @@ Add a note linking the main table to the handler tables:
 ## Creating aggregate pages
 
 When documenting an operation for an aggregate that doesn't have a `/docs` page yet,
-create the aggregate `index.md` first:
+create the aggregate `index.md` first. The aggregate page mirrors the structure
+from the domain home page but with more detail:
 
 ```md
 ---
@@ -329,16 +430,28 @@ has_children: true
 
 # Cart
 
-The Cart aggregate manages shopping cart lifecycle — from empty through active
-(with items) to confirmed or cancelled.
+Manages the shopping cart lifecycle — from empty through active (with items)
+to confirmed or cancelled.
+
+## Lifecycle
+
+| State | Description |
+|---|---|
+| **Empty** | Newly created, no items |
+| **Active** | Has at least one item with a running total |
+| **Confirmed** | Contents frozen, ready for checkout |
+| **Cancelled** | Abandoned, no longer active |
 
 ## Operations
 
 | Operation | Description |
 |---|---|
+| [Create Cart](create-cart) | Create a new empty cart |
+| [Add Item](add-item-to-cart) | Add a product to the cart |
+| [Add Quantity](add-quantity) | Increase quantity of an existing item |
 | [Subtract Quantity](subtract-quantity) | Reduce item quantity, remove item, or empty cart |
-| [Add Item](add-item) | Add a product to the cart |
-| [Remove Item](remove-item) | Remove a product from the cart entirely |
+| [Remove Item](remove-item-from-cart) | Remove a product from the cart entirely |
+| [Confirm Cart](confirm-cart) | Freeze cart contents for checkout |
 ```
 
 Update the operations table each time you add a new operation page.
@@ -353,12 +466,13 @@ Update the operations table each time you add a new operation page.
   Failure literal names appear in the Failure Cases table but not in happy path prose.
 - **Assertion expressions live in code, not in docs.** Describe them in English.
 - **Abbreviate column headers** in wide tables. Reference the pipeline section.
-- **Every operation page has all sections.** Overview, Interface, Scenarios, Pipeline,
-  Decision Table. Atomic functions without steps skip Pipeline.
+- **Every operation page has all sections.** Overview, Interface, Scenarios, Pipeline
+  & Decision Table (linked to `.spec.md`). Atomic functions without steps skip Pipeline.
 - **One operation at a time.** Complete the full page before moving on.
 - **Front matter is mandatory.** Every `.md` in `/docs` must have Jekyll front matter
   with `title`, `parent` (for operation pages), and `nav_order`.
 - **Update the aggregate index** when adding a new operation page.
+- **Update the domain home page** when adding a new aggregate or operation.
 - **Docs live in `/docs` only.** Never write prose into `.spec.md` files next to code —
   those are fully generated by the CLI.
 

@@ -122,13 +122,25 @@ export type AssertionGroup<Fn extends AnyFn> = {
 // Behavioral contract + optional algorithm decomposition.
 // steps is the "how" — visible, reviewable, and the source for auto-inherited failures.
 // When steps is present, shouldFailWith is partial — inherited failures are resolved at runtime.
+// document: true opts in to .spec.md generation via `npm run gen:specs`.
 
 export type Spec<Fn extends AnyFn> = {
+    document?: boolean
     steps?: StepInfo[]
     shouldFailWith: Partial<Record<Fn['failures'], FailGroup<Fn>>>
     shouldSucceedWith: Record<Fn['successTypes'], SuccessGroup<Fn>>
     shouldAssert: Record<Fn['successTypes'], AssertionGroup<Fn>>
 }
+
+// -- asStepSpec ---------------------------------------------------------------
+// Absorbs the AnyFn erasure cast. Steps with `never` failures or any SpecFn
+// variant can be passed to StepInfo.spec without `as unknown as Spec<AnyFn>`.
+//
+// Before: { name: 'calculateTotal', type: 'step', spec: calculateTotalSpec as unknown as Spec<AnyFn> }
+// After:  { name: 'calculateTotal', type: 'step', spec: asStepSpec(calculateTotalSpec) }
+
+export const asStepSpec = <Fn extends AnyFn>(spec: Spec<Fn>): Spec<AnyFn> =>
+    spec as unknown as Spec<AnyFn>
 
 // -- inheritFromSteps() -------------------------------------------------------
 // Auto-inherits failure groups from all step specs in a steps array.
@@ -280,6 +292,59 @@ export const testSpec = <Fn extends AnyFn>(
         })
     })
 }
+
+// -- CanonicalFn --------------------------------------------------------------
+// Standardized implementation structure for flat functions (no decomposition).
+// The canonical formula: constraints → conditions → transform.
+//
+// - constraints: Record<F, predicate>  — returns true when input is VALID
+//                                        (constraint satisfied). False → failure.
+// - conditions:  Record<S, predicate>  — first match wins. Determines success type.
+// - transform:   Record<S, fn>         — produces the output for the matched condition.
+//
+// Usage:
+//   const def: CanonicalFn<CheckActiveFn> = { constraints: {...}, conditions: {...}, transform: {...} }
+//   export const checkActive = execCanonical<CheckActiveFn>(def)
+//
+// The result is a Fn['signature'] — slots directly into factory Steps or testSpec.
+
+export type CanonicalFn<Fn extends AnyFn> = {
+    constraints: Record<Fn['failures'], (input: Fn['input']) => boolean>
+    conditions:  Record<Fn['successTypes'], (input: Fn['input']) => boolean>
+    transform:   Record<Fn['successTypes'], (input: Fn['input']) => Fn['output']>
+}
+
+// -- execCanonical ------------------------------------------------------------
+// Executes the canonical formula:
+//   1. Check all constraints — accumulate failures (predicate returns false → fail)
+//   2. Find first matching condition (first match wins — declaration order matters)
+//   3. Transform via the matched condition's transform function
+//
+// Returns Fn['signature'] — a standard (input) => Result<O, F, S> function.
+
+export const execCanonical = <Fn extends AnyFn>(
+    def: CanonicalFn<Fn>,
+): Fn['signature'] =>
+    (input: Fn['input']): Fn['result'] => {
+        // 1. Check all constraints — accumulate failures
+        const errors: Fn['failures'][] = []
+        for (const [failure, predicate] of Object.entries(def.constraints) as [Fn['failures'], (i: Fn['input']) => boolean][]) {
+            if (!predicate(input)) errors.push(failure)
+        }
+        if (errors.length > 0) return { ok: false, errors }
+
+        // 2. Find matching success condition (first match wins)
+        for (const [successType, condition] of Object.entries(def.conditions) as [Fn['successTypes'], (i: Fn['input']) => boolean][]) {
+            if (condition(input)) {
+                // 3. Transform
+                const value = def.transform[successType](input)
+                return { ok: true, value, successType: [successType] }
+            }
+        }
+
+        // No condition matched — should not happen if conditions are exhaustive
+        return { ok: false, errors: [] as unknown as Fn['failures'][] }
+    }
 ```
 
 ---
@@ -610,37 +675,9 @@ export function buildSpecMd(name: string, spec: any): string {
 
 ---
 
-## scripts/spec-manifest.ts (Step 4)
+## scripts/generate-specs.ts (Step 4)
 
-```ts
-// scripts/spec-manifest.ts
-//
-// Add one entry per composed spec (factory). The generate-specs script reads
-// this manifest, imports each spec, and writes the .spec.md decision tables
-// next to the spec file.
-//
-// Output path is derived from specPath: same directory, .spec.md extension.
-
-export type ManifestEntry = {
-  name:       string   // human-readable name for logging
-  specPath:   string   // import path relative to this file (no extension)
-  exportName: string   // named export from the spec module
-}
-
-export const specManifest: ManifestEntry[] = [
-  // Example:
-  // {
-  //   name: 'subtract-quantity-shell',
-  //   specPath: '../src/cart/subtract-quantity/subtract-quantity.spec',
-  //   exportName: 'subtractQuantityShellSpec',
-  // },
-]
-```
-
----
-
-## scripts/generate-specs.ts (Step 5)
-
+Auto-discovers specs with `document: true` via glob — no manual manifest needed.
 Fully generated structural docs — pipeline tables and decision tables.
 Overwrites the `.spec.md` on every run. No prose, no markers, no manual editing.
 
@@ -648,61 +685,46 @@ Overwrites the `.spec.md` on every run. No prose, no markers, no manual editing.
 // scripts/generate-specs.ts
 
 import { writeFileSync } from 'fs'
+import { globSync } from 'glob'
+import { resolve, basename } from 'path'
 import { buildSpecMd } from './spec-tools'
-import { specManifest } from './spec-manifest'
-
-// -- Manifest validation ------------------------------------------------------
-
-function validateManifest(): { valid: typeof specManifest; errors: string[] } {
-  const valid: typeof specManifest = []
-  const errors: string[] = []
-
-  for (const entry of specManifest) {
-    let resolvedPath: string
-    try {
-      resolvedPath = require.resolve(entry.specPath)
-    } catch {
-      errors.push(`x ${entry.name}: file not found — ${entry.specPath}`)
-      continue
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require(resolvedPath)
-    if (!mod[entry.exportName]) {
-      errors.push(`x ${entry.name}: export '${entry.exportName}' not found in ${resolvedPath}`)
-      continue
-    }
-
-    valid.push(entry)
-  }
-
-  return { valid, errors }
-}
 
 async function main() {
-  if (specManifest.length === 0) {
-    console.log('spec-manifest.ts is empty — no specs to generate.')
+  const specFiles = globSync('src/**/*.spec.ts')
+
+  if (specFiles.length === 0) {
+    console.log('No .spec.ts files found.')
     return
   }
 
-  const { valid: validEntries, errors: manifestErrors } = validateManifest()
-  if (manifestErrors.length > 0) {
-    console.error('\nManifest validation failed:')
-    manifestErrors.forEach(e => console.error(`  ${e}`))
-    console.error(`\nFix the manifest (scripts/spec-manifest.ts) and re-run.\n`)
-    process.exit(1)
+  let generated = 0
+
+  for (const file of specFiles) {
+    const resolvedPath = resolve(file)
+    const mod = await import(resolvedPath)
+
+    // Find exported specs with document: true
+    for (const [exportName, value] of Object.entries(mod)) {
+      if (
+        value &&
+        typeof value === 'object' &&
+        'document' in value &&
+        (value as any).document === true
+      ) {
+        const name = basename(file, '.spec.ts')
+        const mdPath = resolvedPath.replace(/\.spec\.ts$/, '.spec.md')
+        const content = buildSpecMd(name, value)
+        writeFileSync(mdPath, content)
+        console.log(`  ${name} (${exportName}): wrote ${mdPath}`)
+        generated++
+      }
+    }
   }
 
-  for (const entry of validEntries) {
-    const mod = await import(entry.specPath)
-    const spec = mod[entry.exportName]
-
-    const specFile = require.resolve(entry.specPath)
-    const mdPath = specFile.replace(/\.spec\.ts$/, '.spec.md')
-
-    const content = buildSpecMd(entry.name, spec)
-    writeFileSync(mdPath, content)
-    console.log(`  ${entry.name}: wrote ${mdPath}`)
+  if (generated === 0) {
+    console.log('No specs with document: true found — nothing to generate.')
+  } else {
+    console.log(`\nGenerated ${generated} .spec.md file(s).`)
   }
 }
 
@@ -743,26 +765,31 @@ title: Domain Specs
 description: Business-friendly operation specifications
 theme: just-the-docs
 
+mermaid:
+  version: "11"
+
 nav_external_links: []
 ```
 
 ### docs/index.md
 
+The domain home page is a living document — updated by the `ddd-documentation`
+skill each time a new aggregate or operation is added. The init skill creates
+a minimal placeholder:
+
 ```md
 ---
+layout: default
 title: Home
 nav_order: 1
+mermaid: true
 ---
 
 # Domain Specifications
 
-Business-friendly documentation for all domain operations.
-
-Each aggregate has its own section. Each operation within an aggregate
-has a dedicated page covering overview, interface, business scenarios,
-pipeline, and decision tables.
+> Brief description of what this domain layer does.
 
 ---
 
-*Generated with [ddd-documentation](../.claude/skills-v4/ddd-documentation/SKILL.md).*
+*This page is populated by the ddd-documentation skill as operations are documented.*
 ```

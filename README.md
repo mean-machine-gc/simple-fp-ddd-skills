@@ -1,6 +1,6 @@
-# DDD Skills v0.6
+# DDD Skills v4
 
-A pipeline of agents' skills for building domain-driven TypeScript applications
+A pipeline of AI skills for building domain-driven TypeScript applications
 with typed behavioral contracts.
 
 ## Install
@@ -57,9 +57,11 @@ One test file pattern (4 lines) for everything.
 
 ```ts
 SpecFn<I, O, F, S>     — function contract bundle (signature, asyncSignature, input, output, failures, successTypes)
-Spec<Fn>               — behavioral contract (shouldFailWith, shouldSucceedWith, shouldAssert, steps?)
+Spec<Fn>               — behavioral contract (shouldFailWith, shouldSucceedWith, shouldAssert, steps?, document?)
 StepInfo               — algorithm step (name, type, description, spec?)
 StrategyFn<N,I,O,C,F,S> — strategy dispatch contract (name, input, output, cases, failures, successTypes, handlers)
+CanonicalFn<Fn>        — standardized implementation (constraints → conditions → transform), executed via execCanonical
+asStepSpec(spec)       — absorbs AnyFn erasure cast for StepInfo.spec and StrategyStep.handlers
 Result<T, F, S>        — ok with value + successType, or errors
 ```
 
@@ -78,6 +80,9 @@ Result<T, F, S>        — ok with value + successType, or errors
 | `when` / `then` | `whenInput` / `then` + `description` |
 | No formal factory return type | `Fn['signature']` / `Fn['asyncSignature']` |
 | Prose + tables in same `.spec.md` (two owners) | Structural `.spec.md` (CLI) + prose in `/docs/` (Jekyll Just the Docs) |
+| Manual spec manifest | Auto-discovery via `document: true` on spec |
+| `as unknown as Spec<AnyFn>` everywhere | `asStepSpec()` helper absorbs the cast |
+| Shell factories untested | Shell test files with inline mock deps |
 
 ## Skills
 

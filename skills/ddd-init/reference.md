@@ -8,7 +8,7 @@ core in `core/` subfolder. Shared steps live in `shared/steps/`.
 ```
 src/
   shared/
-    spec-framework.ts       <- Result, SpecFn, Spec, StepInfo, testSpec, inheritFromSteps
+    spec-framework.ts       <- Result, SpecFn, Spec, StepInfo, testSpec, inheritFromSteps, asStepSpec
 
   cart/
     types.ts                <- domain types, primitives, failure unions
@@ -31,8 +31,7 @@ src/
 
 scripts/
   spec-tools.ts             <- flattenSpec, toMarkdownTable, toStepTable
-  spec-manifest.ts          <- registry of composed specs
-  generate-specs.ts         <- entry point: reads manifest, writes .spec.md
+  generate-specs.ts         <- auto-discovers document:true specs, writes .spec.md
   tsconfig.json
 
 docs/                       <- Jekyll Just the Docs site (business-friendly prose)
@@ -116,6 +115,7 @@ Enforces all handlers share the same input and output types. Accessed via indexe
 
 ```ts
 type Spec<Fn extends AnyFn> = {
+    document?: boolean
     steps?: StepInfo[]
     shouldFailWith: Partial<Record<Fn['failures'], FailGroup<Fn>>>
     shouldSucceedWith: Record<Fn['successTypes'], SuccessGroup<Fn>>
@@ -125,6 +125,62 @@ type Spec<Fn extends AnyFn> = {
 
 One type for all functions — atomic, core factory, shell factory. The `steps`
 array is optional: present for factories, absent for atomic functions.
+`document: true` opts in to `.spec.md` generation via `npm run gen:specs`.
+
+### asStepSpec — AnyFn erasure helper
+
+```ts
+const asStepSpec = <Fn extends AnyFn>(spec: Spec<Fn>): Spec<AnyFn> =>
+    spec as unknown as Spec<AnyFn>
+```
+
+Absorbs the `as unknown as Spec<AnyFn>` cast needed when passing typed specs
+to `StepInfo.spec` or `StrategyStep.handlers`. Steps with `never` failures or
+any `SpecFn` variant can be used without manual casts:
+
+```ts
+// Before — noisy
+{ name: 'calculateTotal', type: 'step', spec: calculateTotalSpec as unknown as Spec<AnyFn> }
+
+// After — clean
+{ name: 'calculateTotal', type: 'step', spec: asStepSpec(calculateTotalSpec) }
+```
+
+### CanonicalFn — standardized implementation structure
+
+```ts
+type CanonicalFn<Fn extends AnyFn> = {
+    constraints: Record<Fn['failures'], (input: Fn['input']) => boolean>
+    conditions:  Record<Fn['successTypes'], (input: Fn['input']) => boolean>
+    transform:   Record<Fn['successTypes'], (input: Fn['input']) => Fn['output']>
+}
+```
+
+An implementation pattern for flat functions (no decomposition needed). The canonical
+formula — `constraints → conditions → transform` — standardizes how simple functions
+are implemented. `execCanonical(def)` produces a `Fn['signature']` that slots directly
+into factory Steps or `testSpec`.
+
+**When to use:** Simple step functions, guard steps, decider-pattern functions.
+**When NOT to use:** Factories (they have steps, deps, short-circuiting).
+
+`execCanonical` is an internal implementation detail. The implementation file imports
+it, calls it, and exports only the resulting function. Consumers never see
+`execCanonical` or the `CanonicalFn` def — they import the function directly:
+
+```ts
+// check-active.ts (implementation file)
+import { execCanonical } from '../../shared/spec-framework'
+const checkActiveDef: CanonicalFn<CheckActiveFn> = { ... }
+export const checkActive = execCanonical<CheckActiveFn>(checkActiveDef)
+
+// subtract-quantity/core/subtract-quantity.ts (consumer — sees only the function)
+import { checkActive } from '../../shared/steps/check-active'
+```
+
+The spec (`Spec<Fn>`) remains separate — `CanonicalFn` is purely an implementation
+choice. The same `testSpec(name, spec, fn)` pattern works regardless of whether
+the function was implemented manually or via `execCanonical`.
 
 ## Single Input Object
 
@@ -142,39 +198,47 @@ This enables clean spec examples — one `whenInput` field covers the full input
 
 ## Shell / Core Split
 
-- **Shell** — async, has deps (persistence, external services). Lives at the
+- **Shell** — has deps (persistence, external services). Lives at the
   operation folder root: `subtract-quantity/subtract-quantity.ts`
-- **Core** — pure, sync, no deps. Lives in `core/` subfolder:
+- **Core** — no deps. Lives in `core/` subfolder:
   `subtract-quantity/core/subtract-quantity.ts`
-- **Shared steps** — pure atomic functions reused across operations. Live in
+- **Shared steps** — domain functions reused across operations. Live in
   `shared/steps/`: `shared/steps/check-active.ts`
 
-Shell calls core as a step. Core composes atomic steps. Atomic steps are leaf nodes.
+Shell calls core as a step. Core composes domain steps. Steps are leaf nodes.
 
 ## Function Taxonomy
 
+The step/dep distinction is about **ownership**, not sync/async:
+- **Steps** = domain logic, owned by the factory, baked in at construction
+- **Deps** = infrastructure capabilities, injected by the app layer
+
 ```
-Shell (async, has deps)
+Shell (has deps)
   -> bridges app/infra with domain
   -> parses input (steps), resolves context (deps), calls core (step), persists (deps)
-  -> only place async and I/O exist
-  -> typed via Fn['asyncSignature']
+  -> typed via Fn['asyncSignature'] (async because deps are typically async)
   -> exported as: factory(steps)(deps) — partial application
+  -> steps are baked in before export; app layer only provides deps
 
-Core (sync, pure, no deps)
+Core (no deps)
   -> implements core domain logic of an operation
   -> everything from outside (persistence, context) provided by shell
   -> orchestrates domain steps
-  -> typed via Fn['signature']
+  -> can be sync or async (async if it composes other async domain functions)
+  -> typed via Fn['signature'] or Fn['asyncSignature']
   -> exported as: factory(steps) — partial application
 
-Step (sync, pure, atomic)
-  -> single-concern function (guard, transform, parse)
-  -> typed via Fn['signature']
-  -> exported directly (no factory)
+Step (atomic, single-concern)
+  -> domain function (guard, transform, parse, or composed sub-operation)
+  -> can be sync or async — what matters is it's domain logic, not infrastructure
+  -> typed via Fn['signature'] or Fn['asyncSignature']
+  -> exported directly (no factory) or via factory(steps)
 ```
 
-No async domain functions. If it's async, it touches I/O — it's shell.
+**The test for step vs dep:** "Is this domain logic we own, or an infrastructure
+capability we need?" If you'd spec it with `Spec<Fn>` and test it with `testSpec`,
+it's a step. If it's persistence, an external service, or I/O — it's a dep.
 
 ## Standard Input Shapes
 
@@ -231,8 +295,8 @@ Step types carry only the fields that belong to them. Strategy steps carry `hand
 Record of handler specs keyed by case name — enabling auto-inheritance of handler failures.
 
 Step types:
-- `'step'` — pure, sync domain logic. May have a `spec` for failure inheritance.
-- `'dep'` — async, I/O. No spec (deps are infrastructure, tested separately).
+- `'step'` — domain logic (sync or async). May have a `spec` for failure inheritance.
+- `'dep'` — infrastructure capability (persistence, external service). No spec — tested separately.
 - `'strategy'` — `Record<Tag, Handler>` dispatch. Carries `handlers` field with handler specs for auto-inheritance.
 
 ## Strategy Pattern
@@ -301,14 +365,16 @@ import { checkActive } from './check-active'
 testSpec('checkActive', checkActiveSpec, checkActive)
 ```
 
-## Spec Manifest
+## Spec Documentation (`.spec.md`)
 
-Composed specs (factories) are registered in `scripts/spec-manifest.ts`. One entry
-per factory. The `ddd-spec` skill adds entries when creating composed specs. Atomic
-function specs are not registered — they don't have step trees to flatten.
+Specs with `document: true` get auto-generated `.spec.md` files containing
+pipeline tables and decision tables. No manual manifest — `npm run gen:specs`
+globs for `src/**/*.spec.ts` and processes any spec export with `document: true`.
 
-The manifest drives `npm run gen:specs`, which produces `.spec.md` files with
-decision tables. A Claude Code hook auto-runs this when `.spec.ts` files change.
+A Claude Code hook auto-runs this when `.spec.ts` files change.
+
+Typically only factory specs (core or shell) set `document: true` — they have
+step trees and decision tables worth generating. Atomic function specs usually don't.
 
 ## Implementation Typing
 

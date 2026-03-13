@@ -108,8 +108,177 @@ export const makeSubtractQuantity = subtractQuantityShellFactory(shellSteps)
 // App layer: const subtractQuantity = makeSubtractQuantity(realDeps)
 ```
 
-Shell uses `Fn['asyncSignature']` because it's async. Partial application:
-`factory(steps)(deps)` returns the async function.
+Shell uses `Fn['asyncSignature']` because deps are typically async. Partial application:
+`factory(steps)(deps)` returns the async function. Steps are baked in first;
+the app layer only provides deps.
+
+---
+
+## Canonical implementation — `CanonicalFn`
+
+For flat functions that don't need decomposition, `CanonicalFn` provides a
+standardized implementation structure. Instead of writing a freeform function
+body, you fill in three Records — `execCanonical` handles the rest.
+
+**The canonical formula:** `constraints → conditions → transform`
+
+- **constraints** — `Record<F, predicate>`. Each predicate returns `true` when
+  the input is VALID (constraint satisfied). All are checked; failures accumulate.
+- **conditions** — `Record<S, predicate>`. First match wins (declaration order
+  matters). Determines the success type.
+- **transform** — `Record<S, fn>`. Produces the output for the matched condition.
+
+`execCanonical(def)` returns `Fn['signature']` — a standard function that slots
+directly into `testSpec` and factory `Steps` wiring.
+
+### Guard step — checkActive
+
+A pure guard: constraints reject invalid states, single condition, identity transform.
+
+```ts
+// check-active.ts
+import type { CheckActiveFn } from './check-active.spec'
+import type { ActiveCart } from './types'
+import type { CanonicalFn } from './spec-framework'
+import { execCanonical } from './spec-framework'
+
+const checkActiveDef: CanonicalFn<CheckActiveFn> = {
+    constraints: {
+        cart_empty:     (cart) => cart.status !== 'empty',
+        cart_confirmed: (cart) => cart.status !== 'confirmed',
+        cart_cancelled: (cart) => cart.status !== 'cancelled',
+    },
+
+    conditions: {
+        'cart-activity-confirmed': (_cart) => true,
+    },
+
+    transform: {
+        'cart-activity-confirmed': (cart) => cart as ActiveCart,
+    },
+}
+
+export const checkActive = execCanonical<CheckActiveFn>(checkActiveDef)
+```
+
+### Computation step — applyPercentage
+
+Constraint validates range, transform computes the result.
+
+```ts
+// apply-percentage.ts
+import type { ApplyPercentageFn } from './apply-percentage.spec'
+import type { PercentageCoupon } from './types'
+import type { CanonicalFn } from './spec-framework'
+import { execCanonical } from './spec-framework'
+import { calculateTotal } from './types'
+
+const applyPercentageDef: CanonicalFn<ApplyPercentageFn> = {
+    constraints: {
+        rate_out_of_range: (input) => {
+            const coupon = input.coupon as PercentageCoupon
+            return coupon.rate >= 1 && coupon.rate <= 100
+        },
+    },
+
+    conditions: {
+        'percentage-applied': (_input) => true,
+    },
+
+    transform: {
+        'percentage-applied': (input) => {
+            const coupon = input.coupon as PercentageCoupon
+            const originalTotal = calculateTotal(input.cart.items)
+            const savedAmount = Math.floor(originalTotal * coupon.rate / 100)
+            return { originalTotal, savedAmount, finalTotal: originalTotal - savedAmount }
+        },
+    },
+}
+
+export const applyPercentage = execCanonical<ApplyPercentageFn>(applyPercentageDef)
+```
+
+### Multiple success types — decider pattern
+
+When a function classifies its output into different success types, conditions
+determine which one. First match wins — order matters.
+
+```ts
+const subtractQtyDef: CanonicalFn<SubtractQtyFn> = {
+    constraints: {
+        product_not_in_cart:    (input) => !!input.cart.items.find(i => i.productId === input.productId),
+        insufficient_quantity:  (input) => {
+            const item = input.cart.items.find(i => i.productId === input.productId)
+            return !!item && input.quantity <= item.qty
+        },
+    },
+
+    // Order matters — check cart-emptied before quantity-reduced
+    conditions: {
+        'cart-emptied':       (input) => {
+            const item = input.cart.items.find(i => i.productId === input.productId)!
+            return input.quantity === item.qty && input.cart.items.length === 1
+        },
+        'item-removed':       (input) => {
+            const item = input.cart.items.find(i => i.productId === input.productId)!
+            return input.quantity === item.qty
+        },
+        'quantity-reduced':   (_input) => true,   // catch-all — last condition
+    },
+
+    transform: {
+        'cart-emptied':     (input) => ({ status: 'empty', id: input.cart.id }),
+        'item-removed':     (input) => ({
+            ...input.cart,
+            items: input.cart.items.filter(i => i.productId !== input.productId),
+        }),
+        'quantity-reduced': (input) => ({
+            ...input.cart,
+            items: input.cart.items.map(i =>
+                i.productId === input.productId
+                    ? { ...i, qty: i.qty - input.quantity }
+                    : i
+            ),
+        }),
+    },
+}
+
+export const subtractQty = execCanonical<SubtractQtyFn>(subtractQtyDef)
+```
+
+### When to use canonical vs manual
+
+**Use `CanonicalFn` when:**
+- The function is flat — no steps, no deps, no decomposition
+- Logic fits the `constraints → conditions → transform` formula
+- You want standardized structure (guards, decider-pattern functions, simple transforms)
+
+**Use manual implementation when:**
+- The function is a factory (steps, deps, short-circuiting)
+- Parse functions with a structural guard before accumulation (`typeof` check that returns early)
+- Logic doesn't fit the canonical formula cleanly
+
+**The spec stays the same either way.** `Spec<Fn>` is the behavioral contract,
+`testSpec(name, spec, fn)` is the runner. `CanonicalFn` is just one way to
+produce the `fn` argument.
+
+### Canonical implementation rules
+
+- **`execCanonical` is an internal detail.** Import it in the implementation file,
+  call it, and export only the resulting function. Consumers (tests, factories,
+  other steps) import the function — never `execCanonical` or the `CanonicalFn` def.
+- **Constraint predicates return `true` when valid.** `false` means the constraint
+  is violated → failure pushed.
+- **Condition order matters.** First match wins. Put specific conditions before
+  catch-all `() => true`.
+- **Conditions must be exhaustive.** If no condition matches, `execCanonical`
+  returns an empty errors array — a bug. The catch-all `() => true` pattern prevents this.
+- **Constraint keys must match `Fn['failures']` exactly.** Type-enforced by
+  `Record<Fn['failures'], ...>`.
+- **Condition and transform keys must match `Fn['successTypes']` exactly.**
+  Type-enforced by `Record<Fn['successTypes'], ...>`.
+- **Never use for factories.** Factories have steps and deps — they need the
+  factory pattern with short-circuiting.
 
 ---
 
@@ -288,7 +457,7 @@ export const makeSubtractQuantity = subtractQuantityShellFactory(shellSteps)
 ### Factory body rules
 
 - **Short-circuit on every step and dep call:** `if (!x.ok) return x`
-- **Deps are always awaited**, steps are never awaited
+- **Async steps and deps are awaited** — sync steps are not
 - **The comment stays above each line** — the body remains readable as an algorithm
 - **The factory body is the only place deps and steps meet**
 - **Single input object** for >1 parameter
@@ -338,7 +507,7 @@ return { ok: true, value: saved.value, successType: coreResult.successType }
 - `evaluateSuccessType` is always the last step in a core factory
 - Shell factories forward `successType` from core — no reclassification
 - It never fails — returns `S[]` directly, no `Result`
-- It lives in `Steps` like any other step — pure, sync, testable
+- It lives in `Steps` like any other step — domain logic, testable
 - Conditions must be exhaustive — every possible output must match
 
 ---

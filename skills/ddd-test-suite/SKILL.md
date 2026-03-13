@@ -116,13 +116,50 @@ testSpec('subtractQuantityCore', subtractQuantityCoreSpec, subtractQuantityCore)
 ```
 
 **Shell factory:**
+
+Shell factories need deps. Wrap the shell call in a lambda that closes over
+mock deps. The test file is still minimal — mock deps are declared inline.
+
 ```ts
 // subtract-quantity/subtract-quantity.test.ts
 import { testSpec } from '../../shared/spec-framework'
 import { subtractQuantityShellSpec } from './subtract-quantity.spec'
-import { subtractQuantityShell } from './subtract-quantity'
+import { makeSubtractQuantity, shellSteps } from './subtract-quantity'
+import type { Deps } from './subtract-quantity'
+import type { Cart } from '../types'
 
-testSpec('subtractQuantityShell', subtractQuantityShellSpec, subtractQuantityShell)
+// Mock deps — happy-path baseline. Override per-failure in spec examples.
+const STORED_CART: Cart = { /* match the spec's test data */ }
+
+const mockDeps: Deps = {
+    findCartById: async (id) => ({ ok: true, value: STORED_CART }),
+    saveCart:     async (cart) => ({ ok: true, value: cart, successType: [] }),
+}
+
+testSpec(
+    'subtractQuantityShell',
+    subtractQuantityShellSpec,
+    makeSubtractQuantity(mockDeps),
+)
+```
+
+The shell test is slightly larger than the 4-line pattern — mock deps are
+the minimum overhead needed to test wiring. The spec still drives the tests;
+`mockDeps` just satisfies the async boundary.
+
+**Dep failure testing:** The spec's `shouldFailWith` can include dep failure
+examples (e.g. `cart_not_found`). For these, the mock dep needs to return
+failure for the specific input. Use the spec's `whenInput` values to wire
+conditional mock responses:
+
+```ts
+const mockDeps: Deps = {
+    findCartById: async (id) =>
+        id === 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+            ? { ok: false, errors: ['cart_not_found'] }
+            : { ok: true, value: STORED_CART },
+    saveCart: async (cart) => ({ ok: true, value: cart, successType: [] }),
+}
 ```
 
 ---
@@ -156,7 +193,8 @@ export const checkActive: CheckActiveFn['signature'] = (_input) => ({
 
 ## Hard rules
 
-- **The test file contains imports and one `testSpec` call only.** Nothing else.
+- **The test file contains imports and one `testSpec` call only.** Nothing else,
+  except for shell factories which also declare mock deps (minimal inline fakes).
 - **No `beforeEach`, `afterEach`, `beforeAll`, `afterAll`.** If setup is needed,
   the spec design is wrong — go back to the spec skill.
 - **No custom assertions** in the test file. All assertions live inside `testSpec`

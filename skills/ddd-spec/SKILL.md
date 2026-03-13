@@ -45,16 +45,17 @@ Every function gets the same `Spec<Fn>` type. The complexity scales with the fun
 Every function falls into one of three categories. Identify which one —
 the spec structure adapts accordingly.
 
-**Step function** — pure, sync, single-concern. Guards, transforms, parses.
+**Step function** — domain logic, single-concern. Guards, transforms, parses.
 This includes parse functions (which are just steps that take `unknown` input).
-Can itself be a factory of smaller steps (recursive).
+Can be sync or async. Can itself be a factory of smaller steps (recursive).
 
-**Core factory** — pure, sync, orchestrates domain steps. Everything from
-outside (persistence, context) is provided by the shell. No I/O, no deps.
+**Core factory** — orchestrates domain steps, no deps. Everything from
+outside (persistence, context) is provided by the shell. Can be sync or
+async depending on whether its steps are async.
 
-**Shell factory** — async, bridges app/infra with domain. Parses input,
-resolves context via deps, calls core, persists results. The only place
-async and I/O exist.
+**Shell factory** — has deps (persistence, external services). Parses input,
+resolves context via deps, calls core, persists results. Always async
+because deps are typically async.
 
 All three use `Spec<Fn>`. Factories add a `steps` array.
 
@@ -316,18 +317,20 @@ Factories declare their algorithm as a `StepInfo[]` array. This serves two purpo
 2. **Transparency** — the algorithm is visible alongside the behavioral contract
 
 ```ts
+import { asStepSpec } from '../../shared/spec-framework'
+
 const steps: StepInfo[] = [
-    { name: 'parseCartId', type: 'step', description: 'Validate and parse the raw cart id', spec: parseCartIdSpec },
+    { name: 'parseCartId', type: 'step', description: 'Validate and parse the raw cart id', spec: asStepSpec(parseCartIdSpec) },
     { name: 'findCart',    type: 'dep',  description: 'Fetch cart from persistence by id' },
-    { name: 'checkActive', type: 'step', description: 'Verify cart is in active state',    spec: checkActiveSpec },
+    { name: 'checkActive', type: 'step', description: 'Verify cart is in active state',    spec: asStepSpec(checkActiveSpec) },
     { name: 'removeItem',  type: 'step', description: 'Remove the product from cart items' },
     { name: 'saveCart',    type: 'dep',  description: 'Persist the updated cart' },
 ]
 ```
 
 **Step types:**
-- `'step'` — pure, sync domain logic. May have a `spec` for failure inheritance.
-- `'dep'` — async, I/O (persistence, external service). No spec.
+- `'step'` — domain logic (sync or async). May have a `spec` for failure inheritance.
+- `'dep'` — infrastructure capability (persistence, external service). No spec.
 - `'strategy'` — data-dependent dispatch via `Record<Tag, Handler>`. Carries `handlers` field with handler specs for auto-inheritance. See "Strategy pattern" section below.
 
 **Rules:**
@@ -343,7 +346,7 @@ the result — never fails. Shell factories forward `successType` from core.
 ```ts
 // Core factory steps
 const steps: StepInfo[] = [
-    { name: 'checkActive',       type: 'step', description: '...', spec: checkActiveSpec },
+    { name: 'checkActive',       type: 'step', description: '...', spec: asStepSpec(checkActiveSpec) },
     { name: 'checkProductInCart', type: 'step', description: '...' },
     { name: 'subtractQty',       type: 'step', description: '...' },
     { name: 'recalculateTotal',  type: 'step', description: '...' },
@@ -360,8 +363,8 @@ The variant emerges from the conversation about steps. Surface the trade-off:
 > in isolation — no fake deps — we can separate into core (pure, sync) and
 > shell (async). Which fits?"
 
-- **All steps, no deps:** sync core factory, typed via `Fn['signature']`
-- **Has deps:** async shell factory, typed via `Fn['asyncSignature']`
+- **All steps, no deps:** core factory (sync or async depending on steps), typed via `Fn['signature']` or `Fn['asyncSignature']`
+- **Has deps:** shell factory, typed via `Fn['asyncSignature']`
 - **Has deps + complex core:** shell/core split — two specs, two factories
 
 ### Shell/core split
@@ -375,9 +378,9 @@ The shell's steps array references the core spec:
 
 ```ts
 const shellSteps: StepInfo[] = [
-    { name: 'parseCartId',   type: 'step', description: '...', spec: parseCartIdSpec },
+    { name: 'parseCartId',   type: 'step', description: '...', spec: asStepSpec(parseCartIdSpec) },
     { name: 'findCart',      type: 'dep',  description: '...' },
-    { name: 'core',          type: 'step', description: 'Run the core domain logic', spec: coreSpec },
+    { name: 'core',          type: 'step', description: 'Run the core domain logic', spec: asStepSpec(coreSpec) },
     { name: 'saveCart',      type: 'dep',  description: '...' },
 ]
 ```
@@ -564,27 +567,25 @@ Then say:
 
 ---
 
-## Step 8 — Update the spec manifest (factories only)
+## Step 8 — Set `document: true` (factories only)
 
-**For factory specs only** (core or shell), add an entry to `scripts/spec-manifest.ts`
-so the CLI can generate the `.spec.md` decision tables.
-
-Atomic function specs do not need manifest entries — they don't have step trees
-to flatten into decision tables.
+**For factory specs only** (core or shell), add `document: true` to the spec
+so `npm run gen:specs` auto-discovers it and generates the `.spec.md` decision tables.
 
 ```ts
-// scripts/spec-manifest.ts — add this entry:
-{
-  name: 'remove-item',
-  specPath: '../src/cart/remove-item/remove-item.spec',
-  exportName: 'removeItemSpec',
-},
+export const removeItemSpec: Spec<RemoveItemFn> = {
+    document: true,   // <-- opt in to .spec.md generation
+    steps,
+    shouldFailWith: { ... },
+    shouldSucceedWith: { ... },
+    shouldAssert: { ... },
+}
 ```
 
-After adding the entry, run `npm run gen:specs` (or let the hook handle it on
-next save) to generate the `.spec.md`.
+The hook auto-runs `npm run gen:specs` when `.spec.ts` files are saved.
 
-**Skip this step for atomic function specs** — just say:
+**Skip this step for atomic function specs** — they don't have step trees
+worth generating. Just say:
 > "The next step is **ddd-test-suite** — it will generate the test runner.
 >
 > You can also run **ddd-documentation** anytime after specs are defined to
